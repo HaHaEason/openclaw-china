@@ -1,6 +1,6 @@
 {
-  "name": "@moltbot-china/dingtalk",
-  "version": "0.1.5",
+  "name": "@openclaw-china/dingtalk",
+  "version": "0.1.6",
   "type": "module",
   "description": "Moltbot DingTalk channel plugin",
   "license": "MIT",
@@ -10,35 +10,43 @@
     "clawdbot.plugin.json"
   ],
   "moltbot": {
-    "extensions": ["./dist/index.js"],
+    "extensions": [
+      "./dist/index.js"
+    ],
     "channel": {
       "id": "dingtalk",
       "label": "DingTalk",
       "selectionLabel": "DingTalk (钉钉)",
       "docsPath": "/channels/dingtalk",
       "blurb": "钉钉企业消息",
-      "aliases": ["ding"],
+      "aliases": [
+        "ding"
+      ],
       "order": 71
     },
     "install": {
-      "npmSpec": "@moltbot-china/dingtalk",
+      "npmSpec": "@openclaw-china/dingtalk",
       "localPath": ".",
       "defaultChoice": "npm"
     }
   },
   "clawdbot": {
-    "extensions": ["./dist/index.js"],
+    "extensions": [
+      "./dist/index.js"
+    ],
     "channel": {
       "id": "dingtalk",
       "label": "DingTalk",
       "selectionLabel": "DingTalk (钉钉)",
       "docsPath": "/channels/dingtalk",
       "blurb": "钉钉企业消息",
-      "aliases": ["ding"],
+      "aliases": [
+        "ding"
+      ],
       "order": 71
     },
     "install": {
-      "npmSpec": "@moltbot-china/dingtalk",
+      "npmSpec": "@openclaw-china/dingtalk",
       "localPath": ".",
       "defaultChoice": "npm"
     }
@@ -62,6 +70,7 @@
     "release:major": "npm run build && npm version major && npm publish"
   },
   "dependencies": {
+    "@openclaw-china/shared": "0.1.4",
     "dingtalk-stream": "^2.1.4"
   },
   "devDependencies": {

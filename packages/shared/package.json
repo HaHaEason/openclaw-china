@@ -1,7 +1,6 @@
 {
-  "name": "@moltbot-china/shared",
-  "version": "0.1.0",
-  "private": true,
+  "name": "@openclaw-china/shared",
+  "version": "0.1.4",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
@@ -12,5 +11,6 @@
   },
   "devDependencies": {
     "typescript": "^5.7.0"
-  }
+  },
+  "private": false
 }

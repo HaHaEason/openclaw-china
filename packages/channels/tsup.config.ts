@@ -1,7 +1,7 @@
 import { defineConfig } from "tsup";
 
 export default defineConfig({
-  entry: ["index.ts"],
+  entry: ["src/index.ts"],
   format: ["esm"],
   target: "es2022",
   dts: { resolve: true },
@@ -11,6 +11,5 @@ export default defineConfig({
   treeshake: true,
   outDir: "dist",
   tsconfig: "tsconfig.json",
-  noExternal: ["@openclaw-china/shared", "zod"],
-  external: ["dingtalk-stream"],
+  external: ["dingtalk-stream", "moltbot"],
 });

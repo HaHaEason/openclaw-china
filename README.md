@@ -10,7 +10,7 @@
 
 | 平台 | 状态 | 插件 |
 |------|:----:|------|
-| 钉钉 | ✅ 可用 | `@moltbot-china/dingtalk` |
+| 钉钉 | ✅ 可用 | `@openclaw-china/dingtalk` |
 | 飞书 | 🚧 开发中 | - |
 | 企业微信 | 🚧 开发中 | - |
 | QQ 机器人 | 🚧 开发中 | - |
@@ -27,37 +27,68 @@
 
 ### 安装
 
+**推荐：安装统一包（包含所有渠道）**
+
 ```bash
 # Clawdbot
-clawdbot plugins install @moltbot-china/dingtalk
+clawdbot plugins install @openclaw-china/channels
 
 # 或 Moltbot
-moltbot plugins install @moltbot-china/dingtalk
+moltbot plugins install @openclaw-china/channels
+```
+
+**或者：安装单个渠道**
+
+```bash
+# Clawdbot
+clawdbot plugins install @openclaw-china/dingtalk
+# 或 Moltbot
+moltbot plugins install @openclaw-china/dingtalk
 ```
 
 
 
 ### 钉钉配置
 
-> 📖 **[钉钉企业注册指南](doc/guides/dingtalk/configuration.md)** — 无需材料，通常 5 分钟内完成配置
+> 📖 **[钉钉企业注册指南](doc/guides/dingtalk/configuration.md)** — 无需材料，5 分钟内完成配置
 
 
 #### 配置
 
-编辑 `~/.clawdbot/clawdbot.json`（或 `~/.moltbot/moltbot.json`），添加钉钉渠道配置：
+Clawdbot:
+
+```bash
+clawdbot config set channels.dingtalk '{
+  "enabled": true,
+  "clientId": "dingxxxxxx",
+  "clientSecret": "your-app-secret"
+}' --json
+```
+
+Moltbot:
+
+```bash
+moltbot config set channels.dingtalk '{
+  "enabled": true,
+  "clientId": "dingxxxxxx",
+  "clientSecret": "your-app-secret"
+}' --json
+```
+
+**可选高级配置**
+
+如果你需要更细粒度控制（例如私聊/群聊策略或白名单），可以按需添加以下字段：
+编辑 `~/.clawdbot/clawdbot.json`
 
 ```json5
 {
   "channels": {
     "dingtalk": {
-      "enabled": true,
-      "clientId": "dingxxxxxx",
-      "clientSecret": "your-app-secret",
-      "dmPolicy": "pairing",
-      "groupPolicy": "open",
-      "requireMention": true,
-      "allowFrom": [],
-      "groupAllowFrom": []
+      "dmPolicy": "open",          // open | pairing | allowlist (默认: open)
+      "groupPolicy": "open",       // open | allowlist | disabled (默认: open)
+      "requireMention": true,      // 默认: true
+      "allowFrom": [],             // 默认: 未设置
+      "groupAllowFrom": []         // 默认: 未设置
     }
   }
 }

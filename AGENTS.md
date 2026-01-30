@@ -20,20 +20,26 @@ moltbot-china/
 ├── tsconfig.base.json
 │
 ├── packages/
-│   └── shared/                      # 共享工具库（内部使用，不发布）
+│   ├── channels/                    # @openclaw-china/channels 统一包
+│   │   ├── package.json
+│   │   ├── moltbot.plugin.json
+│   │   ├── clawdbot.plugin.json
+│   │   ├── tsconfig.json
+│   │   └── src/
+│   │       └── index.ts
+│   │
+│   └── shared/                      # 共享工具库
 │       ├── package.json
 │       ├── tsconfig.json
 │       └── src/
 │           ├── index.ts
+│           ├── logger/              # 日志工具
+│           │   ├── index.ts
+│           │   └── logger.ts
 │           ├── policy/              # 策略引擎
 │           │   ├── index.ts
 │           │   ├── dm-policy.ts
-│           │   ├── group-policy.ts
-│           │   └── allowlist.ts
-│           ├── message/             # 消息工具
-│           │   ├── index.ts
-│           │   ├── history.ts
-│           │   └── chunker.ts
+│           │   └── group-policy.ts
 │           ├── http/                # HTTP 工具
 │           │   ├── index.ts
 │           │   ├── client.ts
@@ -42,7 +48,8 @@ moltbot-china/
 │               └── common.ts
 │
 ├── extensions/
-│   └── dingtalk/                    # @moltbot-china/dingtalk
+│   └── dingtalk/                    # @openclaw-china/dingtalk
+│       ├── clawdbot.plugin.json
 │       ├── moltbot.plugin.json
 │       ├── package.json
 │       ├── tsconfig.json
@@ -50,11 +57,13 @@ moltbot-china/
 │       └── src/
 │           ├── channel.ts           # ChannelPlugin 实现
 │           ├── client.ts            # Stream SDK 封装
+│           ├── logger.ts            # 日志封装
 │           ├── bot.ts               # 消息处理
 │           ├── monitor.ts           # Stream 连接
 │           ├── send.ts              # 发送消息
 │           ├── media.ts             # 媒体处理
 │           ├── outbound.ts          # 出站适配器
+│           ├── runtime.ts           # 运行时管理
 │           ├── config.ts            # 配置 schema
 │           └── types.ts
 │

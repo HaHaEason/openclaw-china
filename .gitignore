@@ -9,10 +9,13 @@ build/
 *.d.ts
 *.js.map
 !*.config.js
+*.tgz
 
 # IDE
 .idea/
 .vscode/
+.claude/
+openspec/
 *.swp
 *.swo
 .DS_Store

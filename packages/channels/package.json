@@ -1,0 +1,61 @@
+{
+  "name": "@openclaw-china/channels",
+  "version": "0.1.5",
+  "type": "module",
+  "description": "Unified package for all Moltbot China channel plugins",
+  "license": "MIT",
+  "files": [
+    "dist",
+    "moltbot.plugin.json",
+    "clawdbot.plugin.json"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "moltbot": {
+    "extensions": [
+      "./dist/index.js"
+    ],
+    "install": {
+      "npmSpec": "@openclaw-china/channels",
+      "localPath": ".",
+      "defaultChoice": "npm"
+    }
+  },
+  "clawdbot": {
+    "extensions": [
+      "./dist/index.js"
+    ],
+    "install": {
+      "npmSpec": "@openclaw-china/channels",
+      "localPath": ".",
+      "defaultChoice": "npm"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "@openclaw-china/dingtalk": "0.1.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsup": "^8.2.0",
+    "typescript": "^5.7.0"
+  },
+  "peerDependencies": {
+    "moltbot": ">=0.1.0"
+  },
+  "peerDependenciesMeta": {
+    "moltbot": {
+      "optional": true
+    }
+  }
+}

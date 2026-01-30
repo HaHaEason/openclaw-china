@@ -1,6 +1,6 @@
 /**
  * 钉钉消息处理
- * 
+ *
  * 实现消息解析、策略检查和 Agent 分发
  */
 
@@ -9,17 +9,13 @@ import type { DingtalkConfig } from "./config.js";
 import { getDingtalkRuntime, isDingtalkRuntimeInitialized } from "./runtime.js";
 import { sendMessageDingtalk } from "./send.js";
 import { sendMediaDingtalk } from "./media.js";
-import { createLogger, type Logger } from "./logger.js";
-
-/**
- * 策略检查结果
- */
-export interface PolicyCheckResult {
-  /** 是否允许处理该消息 */
-  allowed: boolean;
-  /** 拒绝原因（如果被拒绝） */
-  reason?: string;
-}
+import {
+  createLogger,
+  type Logger,
+  checkDmPolicy,
+  checkGroupPolicy,
+  type PolicyCheckResult,
+} from "@openclaw-china/shared";
 
 /**
  * 解析钉钉原始消息为标准化的消息上下文
@@ -81,101 +77,6 @@ function resolveMentionedBot(raw: DingtalkRawMessage): boolean {
   // 只要有 @，就认为机器人被提及（钉钉群聊机器人只有被 @才会收到消息）
   return atUsers.length > 0;
 }
-
-/**
- * 检查单聊策略
- * 
- * @param params 检查参数
- * @returns 策略检查结果
- * 
- * Requirements: 5.1
- */
-export function checkDmPolicy(params: {
-  dmPolicy: "open" | "pairing" | "allowlist";
-  senderId: string;
-  allowFrom?: string[];
-}): PolicyCheckResult {
-  const { dmPolicy, senderId, allowFrom = [] } = params;
-  
-  switch (dmPolicy) {
-    case "open":
-      // 开放策略：允许所有单聊消息
-      return { allowed: true };
-    
-    case "pairing":
-      // 配对策略：允许所有单聊消息（配对逻辑由上层处理）
-      return { allowed: true };
-    
-    case "allowlist":
-      // 白名单策略：仅允许 allowFrom 中的发送者
-      if (allowFrom.includes(senderId)) {
-        return { allowed: true };
-      }
-      return {
-        allowed: false,
-        reason: `sender ${senderId} not in DM allowlist`,
-      };
-    
-    default:
-      return { allowed: true };
-  }
-}
-
-/**
- * 检查群聊策略
- * 
- * @param params 检查参数
- * @returns 策略检查结果
- * 
- * Requirements: 5.2, 5.3, 5.4
- */
-export function checkGroupPolicy(params: {
-  groupPolicy: "open" | "allowlist" | "disabled";
-  conversationId: string;
-  groupAllowFrom?: string[];
-  requireMention: boolean;
-  mentionedBot: boolean;
-}): PolicyCheckResult {
-  const { groupPolicy, conversationId, groupAllowFrom = [], requireMention, mentionedBot } = params;
-  
-  // 首先检查群聊策略
-  switch (groupPolicy) {
-    case "disabled":
-      // 禁用策略：拒绝所有群聊消息
-      return {
-        allowed: false,
-        reason: "group messages disabled",
-      };
-    
-    case "allowlist":
-      // 白名单策略：仅允许 groupAllowFrom 中的群组
-      if (!groupAllowFrom.includes(conversationId)) {
-        return {
-          allowed: false,
-          reason: `group ${conversationId} not in allowlist`,
-        };
-      }
-      break;
-    
-    case "open":
-      // 开放策略：允许所有群聊
-      break;
-    
-    default:
-      break;
-  }
-  
-  // 然后检查 @提及要求
-  if (requireMention && !mentionedBot) {
-    return {
-      allowed: false,
-      reason: "message did not mention bot",
-    };
-  }
-  
-  return { allowed: true };
-}
-
 
 /**
  * 入站消息上下文

@@ -11,8 +11,10 @@
   "scripts": {
     "build": "pnpm -r build",
     "dev": "pnpm -r --parallel dev",
-    "build:shared": "pnpm -F @moltbot-china/shared build",
-    "build:dingtalk": "pnpm -F @moltbot-china/dingtalk build",
+    "build:shared": "pnpm -F @openclaw-china/shared build",
+    "build:dingtalk": "pnpm -F @openclaw-china/dingtalk build",
+    "build:channels": "pnpm -F @openclaw-china/channels build",
+    "release:all": "node scripts/release-all.mjs",
     "clean": "pnpm -r clean",
     "lint": "oxlint .",
     "typecheck": "tsc --noEmit"

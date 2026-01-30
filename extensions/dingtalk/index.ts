@@ -1,5 +1,5 @@
 /**
- * @moltbot-china/dingtalk
+ * @openclaw-china/dingtalk
  * 钉钉渠道插件入口
  *
  * 导出:
