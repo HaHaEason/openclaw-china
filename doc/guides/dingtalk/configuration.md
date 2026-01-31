@@ -96,8 +96,13 @@ openclaw config set channels.dingtalk '{
   "enableAICard": true
 }' --json
 ```
+### 2. OpenClaw初始化
+```
+openclaw onboard --install-daemon
+```
+如果已经执行了3.1，那么可以在channel时选忽略。
 
-### 2. 启动服务
+### 3. 启动服务
 
 **调试模式**（推荐先用这个，方便查看日志）：
 
@@ -110,3 +115,4 @@ openclaw gateway --port 18789 --verbose
 ```bash
 openclaw daemon start
 ```
+
