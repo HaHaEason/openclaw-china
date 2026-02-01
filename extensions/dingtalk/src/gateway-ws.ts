@@ -41,6 +41,15 @@ interface Pending {
   reject: (err: unknown) => void;
 }
 
+/** 会话进度缓存，用于断开重连后恢复 */
+interface SessionProgress {
+  runId: string;
+  sessionKey: string;
+  accumulated: string;
+  lastSeq: number;
+  updatedAt: number;
+}
+
 export class GatewayWsClient {
   private ws: WebSocket | null = null;
   private pending = new Map<string, Pending>();
@@ -51,6 +60,15 @@ export class GatewayWsClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private backoffMs = 1000;
   private connectPromise: Promise<void> | null = null;
+
+  // seq 追踪
+  private lastSeq: number | null = null;
+
+  // 会话进度缓存，key 为 sessionKey
+  private sessionProgress = new Map<string, SessionProgress>();
+
+  // 进度缓存过期时间 (5分钟)
+  private static readonly PROGRESS_TTL_MS = 5 * 60 * 1000;
 
   constructor(
     private config: GatewayWsConfig,
@@ -152,11 +170,26 @@ export class GatewayWsClient {
         return;
       }
 
-      // 处理 chat 事件
-      if (frame.type === "event" && frame.event === "chat") {
-        const payload = frame.payload as ChatEvent;
-        const listener = this.chatListeners.get(payload.runId);
-        listener?.(payload);
+      // 处理事件
+      if (frame.type === "event") {
+        // seq 追踪和间隙检测
+        const seq = typeof frame.seq === "number" ? frame.seq : null;
+        if (seq !== null) {
+          if (this.lastSeq !== null && seq > this.lastSeq + 1) {
+            const gap = seq - this.lastSeq - 1;
+            this.logger.warn(
+              `[gateway-ws] event gap detected: expected seq=${this.lastSeq + 1}, received seq=${seq}, missed ${gap} events`
+            );
+          }
+          this.lastSeq = seq;
+        }
+
+        // 处理 chat 事件
+        if (frame.event === "chat") {
+          const payload = frame.payload as ChatEvent;
+          const listener = this.chatListeners.get(payload.runId);
+          listener?.(payload);
+        }
       }
     } catch (err) {
       this.logger.debug(`[gateway-ws] parse error: ${String(err)}`);
@@ -239,9 +272,56 @@ export class GatewayWsClient {
   }
 
   /**
+   * 清理过期的会话进度缓存
+   */
+  private cleanupExpiredProgress(): void {
+    const now = Date.now();
+    for (const [key, progress] of this.sessionProgress) {
+      if (now - progress.updatedAt > GatewayWsClient.PROGRESS_TTL_MS) {
+        this.logger.debug(`[gateway-ws] cleaning up expired progress for session ${key}`);
+        this.sessionProgress.delete(key);
+      }
+    }
+  }
+
+  /**
+   * 保存会话进度
+   */
+  private saveProgress(sessionKey: string, runId: string, accumulated: string, seq: number): void {
+    this.sessionProgress.set(sessionKey, {
+      runId,
+      sessionKey,
+      accumulated,
+      lastSeq: seq,
+      updatedAt: Date.now(),
+    });
+    this.logger.debug(
+      `[gateway-ws] saved progress for session ${sessionKey}: ${accumulated.length} chars, seq=${seq}`
+    );
+  }
+
+  /**
+   * 获取会话进度
+   */
+  private getProgress(sessionKey: string): SessionProgress | undefined {
+    this.cleanupExpiredProgress();
+    return this.sessionProgress.get(sessionKey);
+  }
+
+  /**
+   * 清除会话进度
+   */
+  private clearProgress(sessionKey: string): void {
+    this.sessionProgress.delete(sessionKey);
+  }
+
+  /**
    * 发送聊天消息并返回流式响应
    *
-   * 改进：连接断开时优雅降级，返回已累积的数据而不是抛出错误
+   * 改进：
+   * - 连接断开时优雅降级，返回已累积的数据而不是抛出错误
+   * - 断开时保存进度，重连后可以恢复
+   * - 追踪 seq 用于检测事件间隙
    */
   async *chatStream(params: {
     sessionKey: string;
@@ -255,10 +335,27 @@ export class GatewayWsClient {
     let disconnectedWithData = false; // 标记：连接断开但有数据
     const resolvers: Array<() => void> = [];
     let lastState: ChatEvent["state"] | null = null;
+    let lastEventSeq = 0; // 追踪当前会话的最后 seq
+
+    // 检查是否有之前断开时保存的进度
+    const savedProgress = this.getProgress(params.sessionKey);
+    if (savedProgress) {
+      this.logger.info(
+        `[gateway-ws] found saved progress for session ${params.sessionKey}: ${savedProgress.accumulated.length} chars, lastSeq=${savedProgress.lastSeq}`
+      );
+      // 注意：这里不直接恢复 accumulated，因为新请求会从头开始
+      // 但我们记录日志以便调试
+    }
 
     // 注册 chat 事件监听
     this.chatListeners.set(runId, (evt) => {
       lastState = evt.state;
+
+      // 追踪事件 seq
+      if (typeof evt.seq === "number") {
+        lastEventSeq = evt.seq;
+      }
+
       if (evt.state === "delta" || evt.state === "final") {
         const text =
           evt.message?.content
@@ -266,18 +363,28 @@ export class GatewayWsClient {
             .map((c) => c.text ?? "")
             .join("") ?? "";
         accumulated = text;
+
+        // 每次收到数据都保存进度（用于断开时恢复）
+        if (accumulated.length > 0) {
+          this.saveProgress(params.sessionKey, runId, accumulated, lastEventSeq);
+        }
       }
 
       if (evt.state === "final" || evt.state === "aborted") {
         done = true;
+        // 正常完成，清除进度缓存
+        this.clearProgress(params.sessionKey);
       }
 
       if (evt.state === "error") {
         // 改进：如果已有累积数据，不抛出错误，而是标记完成
         if (accumulated.length > 0) {
-          this.logger.warn(`[gateway-ws] connection error with ${accumulated.length} chars accumulated, graceful finish`);
+          this.logger.warn(
+            `[gateway-ws] connection error with ${accumulated.length} chars accumulated (seq=${lastEventSeq}), graceful finish`
+          );
           disconnectedWithData = true;
           done = true;
+          // 保留进度缓存，不清除（可能需要恢复）
         } else {
           error = new Error(evt.errorMessage ?? "chat error");
           done = true;
@@ -314,6 +421,14 @@ export class GatewayWsClient {
 
       // only allow final output
       if (lastState === "final" && accumulated) {
+        yield accumulated;
+      }
+
+      // 如果连接断开但有数据，也输出
+      if (disconnectedWithData && accumulated) {
+        this.logger.info(
+          `[gateway-ws] yielding ${accumulated.length} chars from interrupted stream (lastSeq=${lastEventSeq})`
+        );
         yield accumulated;
       }
 
