@@ -283,6 +283,8 @@ async function* streamFromGateway(params: {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let lastChunkTime: number | null = null; // 初始为 null，第一个 chunk 不检测
+  const TASK_BOUNDARY_THRESHOLD_MS = 1000; // 超过1秒认为是任务边界
 
   while (true) {
     const { done: readDone, value } = await reader.read();
@@ -297,10 +299,23 @@ async function* streamFromGateway(params: {
       const data = line.slice(6).trim();
       if (data === "[DONE]") return;
       try {
-        const chunk = JSON.parse(data);
-        const content = (chunk as Record<string, unknown>)?.choices?.[0]?.delta?.content;
+        const chunk = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string }; finish_reason?: string | null }> };
+        const choice = chunk?.choices?.[0];
+        const content = choice?.delta?.content;
+
         if (typeof content === "string" && content) {
+          const now = Date.now();
+
+          // 检测时间间隔，判断是否为任务边界（跳过第一个 chunk）
+          if (lastChunkTime !== null) {
+            const timeSinceLastChunk = now - lastChunkTime;
+            if (timeSinceLastChunk > TASK_BOUNDARY_THRESHOLD_MS) {
+              yield "\n\n──────────\n\n";
+            }
+          }
+
           yield content;
+          lastChunkTime = now;
         }
       } catch {
         continue;
