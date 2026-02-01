@@ -66,7 +66,7 @@ openclaw plugins install @openclaw-china/wecom
 #### 更新插件
 
 ```bash
-openclaw plugins update @openclaw-china/channels
+openclaw plugins update channels
 ```
 
 
