@@ -16,6 +16,7 @@ import { z } from "zod";
  * - groupAllowFrom: 群聊白名单会话 ID 列表
  * - historyLimit: 历史消息数量限制
  * - textChunkLimit: 文本分块大小限制
+ * - replyFinalOnly: 是否只发送最终回复（非流式）
  */
 export const FeishuConfigSchema = z.object({
   /** 是否启用飞书渠道 */
@@ -53,6 +54,9 @@ export const FeishuConfigSchema = z.object({
 
   /** 文本分块大小限制 (飞书文本消息最大 4000 字符) */
   textChunkLimit: z.number().int().positive().optional().default(4000),
+
+  /** 仅发送最终回复（非流式） */
+  replyFinalOnly: z.boolean().optional().default(true),
 });
 
 export type FeishuConfig = z.infer<typeof FeishuConfigSchema>;

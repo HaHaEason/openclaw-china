@@ -15,7 +15,10 @@
  */
 
 import { getAccessToken } from "./client.js";
-import { resolveExtension } from "@openclaw-china/shared";
+import {
+  resolveExtension,
+  extractImagesFromText,
+} from "@openclaw-china/shared";
 import type { Logger } from "./logger.js";
 import * as os from "os";
 import * as path from "path";
@@ -92,27 +95,6 @@ const REQUEST_TIMEOUT = 30000;
 
 /** 媒体上传超时时间（毫秒） */
 const UPLOAD_TIMEOUT = 60000;
-
-// Markdown 图片本地路径（含 MEDIA: 前缀）
-const LOCAL_IMAGE_RE =
-  /!\[([^\]]*)\]\(((?:file:\/\/\/|MEDIA:|attachment:\/\/\/)[^)]+|\/(?:tmp|var|private|Users|home|root)[^)]+|[A-Za-z]:[\\/][^)]+)\)/g;
-
-// 纯文本中的本地图片路径
-const BARE_IMAGE_PATH_RE =
-  /`?((?:\/(?:tmp|var|private|Users|home|root)\/[^\s`'",)]+|[A-Za-z]:[\\/][^\s`'",)]+)\.(?:png|jpg|jpeg|gif|bmp|webp))`?/gi;
-
-function toLocalPath(raw: string): string {
-  let p = raw;
-  if (p.startsWith("file://")) p = p.replace("file://", "");
-  else if (p.startsWith("MEDIA:")) p = p.replace("MEDIA:", "");
-  else if (p.startsWith("attachment://")) p = p.replace("attachment://", "");
-  try {
-    p = decodeURIComponent(p);
-  } catch {
-    // ignore decode errors
-  }
-  return p;
-}
 
 /**
  * 媒体上传结果
@@ -472,6 +454,7 @@ export async function sendMediaDingtalk(
 
 /**
  * 处理 Markdown 中的本地图片路径（含 MEDIA: 前缀），并替换为 media_id
+ * 使用 shared 模块的 extractImagesFromText 实现
  */
 export async function processLocalImagesInMarkdown(params: {
   text: string;
@@ -480,9 +463,32 @@ export async function processLocalImagesInMarkdown(params: {
   cache?: Map<string, string>;
 }): Promise<string> {
   const { text, cfg, log, cache } = params;
-  let result = text;
   const mediaCache = cache ?? new Map<string, string>();
 
+  // 使用 shared 模块提取图片
+  const { images } = extractImagesFromText(text, {
+    removeFromText: false, // 我们需要手动替换为 media_id
+    checkExists: true,
+    existsSync: (p: string) => {
+      const exists = fs.existsSync(p);
+      if (!exists) {
+        log?.warn?.(`[dingtalk] local image not found: ${p}`);
+      }
+      return exists;
+    },
+    parseMarkdownImages: true,
+    parseHtmlImages: false, // 钉钉不支持 HTML
+    parseBarePaths: true,
+  });
+
+  // 过滤出本地图片
+  const localImages = images.filter((img) => img.isLocal && img.localPath);
+
+  if (localImages.length === 0) {
+    return text;
+  }
+
+  // 上传图片并获取 media_id
   const getMediaId = async (localPath: string): Promise<string> => {
     const cached = mediaCache.get(localPath);
     if (cached) return cached;
@@ -498,41 +504,27 @@ export async function processLocalImagesInMarkdown(params: {
     return upload.mediaId;
   };
 
-  const mdMatches = [...text.matchAll(LOCAL_IMAGE_RE)];
-  if (mdMatches.length > 0) {
-    log?.info?.(`[dingtalk] processing ${mdMatches.length} markdown images`);
-    for (const match of mdMatches) {
-      const [fullMatch, alt, rawPath] = match;
-      const cleanPath = rawPath.replace(/\\ /g, " ");
-      const localPath = toLocalPath(cleanPath);
-      if (!fs.existsSync(localPath)) {
-        log?.warn?.(`[dingtalk] local image not found: ${localPath}`);
-        continue;
-      }
-      const mediaId = await getMediaId(localPath);
-      result = result.replace(fullMatch, `![${alt}](${mediaId})`);
-    }
-  }
+  let result = text;
 
-  const bareMatches = [...result.matchAll(BARE_IMAGE_PATH_RE)];
-  const newBareMatches = bareMatches.filter((m) => {
-    const idx = m.index ?? 0;
-    const before = result.slice(Math.max(0, idx - 10), idx);
-    return !before.includes("](");
-  });
+  // 替换图片路径为 media_id
+  for (const img of localImages) {
+    if (!img.localPath) continue;
 
-  if (newBareMatches.length > 0) {
-    log?.info?.(`[dingtalk] processing ${newBareMatches.length} bare image paths`);
-    for (const match of newBareMatches.reverse()) {
-      const [fullMatch, rawPath] = match;
-      const localPath = toLocalPath(rawPath);
-      if (!fs.existsSync(localPath)) {
-        log?.warn?.(`[dingtalk] local image not found: ${localPath}`);
-        continue;
+    try {
+      const mediaId = await getMediaId(img.localPath);
+
+      // 替换 Markdown 图片语法: ![...](source)
+      const escapedSource = img.source.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const mdPattern = new RegExp(`!\\[([^\\]]*)\\]\\(${escapedSource}\\)`, "g");
+      result = result.replace(mdPattern, `![$1](${mediaId})`);
+
+      // 替换裸露的路径（非 Markdown 格式）
+      // 直接替换原始 source（如 MEDIA:path 或裸露路径）
+      if (result.includes(img.source)) {
+        result = result.split(img.source).join(`![](${mediaId})`);
       }
-      const mediaId = await getMediaId(localPath);
-      const replacement = `![](${mediaId})`;
-      result = result.slice(0, match.index!) + result.slice(match.index!).replace(fullMatch, replacement);
+    } catch (err) {
+      log?.warn?.(`[dingtalk] failed to upload image ${img.localPath}: ${err}`);
     }
   }
 

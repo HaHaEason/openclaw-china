@@ -8,9 +8,10 @@ import type { FeishuMessageEvent, FeishuMessageContext } from "./types.js";
 import type { FeishuConfig } from "./config.js";
 import { FeishuConfigSchema } from "./config.js";
 import { getFeishuRuntime, isFeishuRuntimeInitialized } from "./runtime.js";
-import { sendMarkdownCardFeishu, sendMessageFeishu } from "./send.js";
+import { sendFileFeishu, sendMarkdownCardFeishu, sendMessageFeishu, processLocalImagesInMarkdown } from "./send.js";
 import { createLogger, type Logger } from "./logger.js";
-import { checkDmPolicy, checkGroupPolicy } from "@openclaw-china/shared";
+import { checkDmPolicy, checkGroupPolicy, extractFilesFromText, isImagePath } from "@openclaw-china/shared";
+import * as fs from "node:fs";
 
 /**
  * 解析飞书消息事件为标准化上下文
@@ -127,6 +128,8 @@ export async function handleFeishuMessage(params: {
     log: params.log,
     error: params.error,
   });
+  const receivedAt = Date.now();
+  logger.info?.(`[trace] inbound received_at=${new Date(receivedAt).toISOString()}`);
 
   const ctx = parseFeishuMessageEvent(event);
   const isGroup = ctx.chatType === "group";
@@ -235,9 +238,19 @@ export async function handleFeishuMessage(params: {
       }) ?? (channelCfg.textChunkLimit ?? 4000);
     const chunkMode = textApi?.resolveChunkMode?.(cfg, "feishu");
 
-    const deliver = async (payload: { text?: string }) => {
+    const replyFinalOnly = channelCfg.replyFinalOnly !== false;
+    const deliver = async (payload: { text?: string }, info?: { kind?: string }) => {
+      if (replyFinalOnly && info?.kind !== "final") {
+        return;
+      }
       const rawText = payload.text ?? "";
       if (!rawText.trim()) return;
+      const replyKind = info?.kind ?? "unknown";
+      const deliverAt = Date.now();
+      logger.info?.(
+        `[trace] deliver_start=${new Date(deliverAt).toISOString()} (+${deliverAt - receivedAt}ms)`
+      );
+      logger.info?.(`[reply] [${replyKind}] text: ${rawText}`);
 
       const chunks =
         textApi?.chunkTextWithMode && typeof textChunkLimit === "number" && textChunkLimit > 0
@@ -245,25 +258,66 @@ export async function handleFeishuMessage(params: {
           : [rawText];
 
       for (const chunk of chunks) {
+        // 预处理本地图片：上传并替换为飞书图片链接
+        const processedChunk = await processLocalImagesInMarkdown(channelCfg, chunk);
+
+        // 提取本地文件路径（非图片）
+        const { text: cleanedChunk, files } = extractFilesFromText(processedChunk, {
+          removeFromText: true,
+          checkExists: false,
+          parseBarePaths: true,
+          parseMarkdownLinks: true,
+        });
+
+        const localFiles = files
+          .filter((f) => f.isLocal && f.localPath && !isImagePath(f.localPath))
+          .map((f) => f.localPath as string)
+          .filter((p) => {
+            if (fs.existsSync(p)) return true;
+            logger.warn?.(`[feishu] local file not found: ${p}`);
+            return false;
+          });
+
         logger.debug(
           `send reply via ${
             channelCfg.sendMarkdownAsCard ? "interactive markdown card" : "text message"
-          } (receive_id_type=chat_id, chunk_len=${chunk.length})`
+          } (receive_id_type=chat_id, chunk_len=${cleanedChunk.length}, local_files=${localFiles.length}, kind=${info?.kind ?? "unknown"})`
         );
         if (channelCfg.sendMarkdownAsCard) {
           await sendMarkdownCardFeishu({
             cfg: channelCfg,
             to: ctx.chatId,
-            text: chunk,
+            text: cleanedChunk,
             receiveIdType: "chat_id",
           });
         } else {
           await sendMessageFeishu({
             cfg: channelCfg,
             to: ctx.chatId,
-            text: chunk,
+            text: cleanedChunk,
             receiveIdType: "chat_id",
           });
+        }
+        const sentAt = Date.now();
+        logger.info?.(
+          `[trace] deliver_sent=${new Date(sentAt).toISOString()} (+${sentAt - receivedAt}ms)`
+        );
+
+        if (localFiles.length > 0) {
+          const uniqueFiles = Array.from(new Set(localFiles));
+          logger.info?.(`[feishu] fallback: sending ${uniqueFiles.length} local files`);
+          for (const filePath of uniqueFiles) {
+            try {
+              await sendFileFeishu({
+                cfg: channelCfg,
+                to: ctx.chatId,
+                mediaUrl: filePath,
+                receiveIdType: "chat_id",
+              });
+            } catch (err) {
+              logger.error?.(`[feishu] failed to send fallback file ${filePath}: ${String(err)}`);
+            }
+          }
         }
       }
     };
@@ -274,8 +328,8 @@ export async function handleFeishuMessage(params: {
 
     const dispatcherResult = core.channel.reply.createReplyDispatcherWithTyping
       ? core.channel.reply.createReplyDispatcherWithTyping({
-          deliver: async (payload: unknown) => {
-            await deliver(payload as { text?: string });
+          deliver: async (payload: unknown, info?: { kind?: string }) => {
+            await deliver(payload as { text?: string }, info);
           },
           humanDelay,
           onError: (err: unknown, info: { kind: string }) => {
@@ -284,8 +338,8 @@ export async function handleFeishuMessage(params: {
         })
       : {
           dispatcher: core.channel.reply.createReplyDispatcher?.({
-            deliver: async (payload: unknown) => {
-              await deliver(payload as { text?: string });
+            deliver: async (payload: unknown, info?: { kind?: string }) => {
+              await deliver(payload as { text?: string }, info);
             },
             humanDelay,
             onError: (err: unknown, info: { kind: string }) => {
@@ -312,7 +366,10 @@ export async function handleFeishuMessage(params: {
 
     dispatcherResult.markDispatchIdle?.();
 
-    logger.debug(`dispatch complete (queuedFinal=${queuedFinal}, replies=${counts.final})`);
+    const dispatchDoneAt = Date.now();
+    logger.debug(
+      `dispatch complete (queuedFinal=${queuedFinal}, replies=${counts.final}, +${dispatchDoneAt - receivedAt}ms)`
+    );
   } catch (err) {
     logger.error(`failed to dispatch message: ${String(err)}`);
   }

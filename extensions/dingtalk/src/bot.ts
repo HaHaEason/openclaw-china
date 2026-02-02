@@ -24,95 +24,17 @@ import {
 } from "./media.js";
 import { getAccessToken } from "./client.js";
 import { createAICard, streamAICard, finishAICard, type AICardInstance } from "./card.js";
-import { createLogger, type Logger, checkDmPolicy, checkGroupPolicy, resolveFileCategory } from "@openclaw-china/shared";
-
-const NON_IMAGE_EXTENSIONS = new Set([
-  "pdf",
-  "doc",
-  "docx",
-  "xls",
-  "xlsx",
-  "csv",
-  "ppt",
-  "pptx",
-  "zip",
-  "rar",
-  "7z",
-  "tar",
-  "gz",
-  "tgz",
-  "bz2",
-  "mp3",
-  "wav",
-  "ogg",
-  "m4a",
-  "mp4",
-  "mov",
-  "avi",
-  "mkv",
-  "webm",
-  "txt",
-  "md",
-  "json",
-  "xml",
-  "yaml",
-  "yml",
-]);
-
-const IMAGE_EXTENSIONS = new Set([
-  ".png",
-  ".jpg",
-  ".jpeg",
-  ".gif",
-  ".webp",
-  ".bmp",
-  ".tiff",
-  ".tif",
-  ".heic",
-  ".heif",
-]);
-
-const NON_IMAGE_EXT_PATTERN = Array.from(NON_IMAGE_EXTENSIONS).join("|");
-const MARKDOWN_LINK_RE = /\[([^\]]*)\]\(([^)]+)\)/g;
-const BARE_FILE_PATH_RE = new RegExp(
-  String.raw`((?:\/(?:tmp|var|private|Users|home|root)\/[^\s'",)]+|[A-Za-z]:\\(?:[^\\/:*?"<>|\r\n]+\\)*[^\\/:*?"<>|\r\n]+)\.(?:${NON_IMAGE_EXT_PATTERN}))`,
-  "gi"
-);
-
-function normalizeLocalPath(raw: string): string {
-  let p = raw.trim();
-  if (p.startsWith("file://")) p = p.replace("file://", "");
-  else if (p.startsWith("MEDIA:")) p = p.replace("MEDIA:", "");
-  else if (p.startsWith("attachment://")) p = p.replace("attachment://", "");
-  try {
-    p = decodeURIComponent(p);
-  } catch {
-    // ignore decode errors
-  }
-  return p;
-}
-
-function isLocalReference(raw: string): boolean {
-  if (/^https?:\/\//i.test(raw)) return false;
-  return (
-    raw.startsWith("file://") ||
-    raw.startsWith("MEDIA:") ||
-    raw.startsWith("attachment://") ||
-    raw.startsWith("/") ||
-    raw.startsWith("~") ||
-    /^[a-zA-Z]:[\\/]/.test(raw)
-  );
-}
-
-function isNonImageFilePath(localPath: string): boolean {
-  const ext = path.extname(localPath).toLowerCase().replace(/^\./, "");
-  return ext ? NON_IMAGE_EXTENSIONS.has(ext) : false;
-}
-
-function isImagePath(localPath: string): boolean {
-  const ext = path.extname(localPath).toLowerCase();
-  return ext ? IMAGE_EXTENSIONS.has(ext) : false;
-}
+import {
+  createLogger,
+  type Logger,
+  checkDmPolicy,
+  checkGroupPolicy,
+  resolveFileCategory,
+  // 媒体解析模块
+  extractFilesFromText,
+  normalizeLocalPath,
+  isImagePath,
+} from "@openclaw-china/shared";
 
 function buildGatewayUserContent(inboundCtx: InboundContext, logger: Logger): string {
   const base = inboundCtx.Body ?? "";
@@ -145,44 +67,36 @@ function buildGatewayUserContent(inboundCtx: InboundContext, logger: Logger): st
   return `${base}\n\n[local files]\n${list}`;
 }
 
+/**
+ * 从文本中提取本地文件路径（非图片）
+ * 使用 shared 模块的 extractFilesFromText 实现
+ */
 function extractLocalFilesFromText(params: {
   text: string;
   logger?: Logger;
 }): { text: string; files: string[] } {
   const { text, logger } = params;
-  const files = new Map<string, string>();
-  let result = text;
 
-  const registerFile = (localPath: string): string => {
-    if (!files.has(localPath)) {
-      files.set(localPath, path.basename(localPath));
-    }
-    return `[文件: ${path.basename(localPath)}]`;
-  };
-
-  result = result.replace(MARKDOWN_LINK_RE, (match, _label, rawPath, offset, fullText) => {
-    if (offset > 0 && fullText[offset - 1] === "!") return match;
-    if (!isLocalReference(rawPath)) return match;
-    const localPath = normalizeLocalPath(rawPath);
-    if (!isNonImageFilePath(localPath)) return match;
-    if (!fs.existsSync(localPath)) {
-      logger?.warn?.(`[stream] local file not found: ${localPath}`);
-      return match;
-    }
-    return registerFile(localPath);
+  const result = extractFilesFromText(text, {
+    removeFromText: true,
+    checkExists: true,
+    existsSync: (p: string) => {
+      const exists = fs.existsSync(p);
+      if (!exists) {
+        logger?.warn?.(`[stream] local file not found: ${p}`);
+      }
+      return exists;
+    },
+    parseBarePaths: true,
+    parseMarkdownLinks: true,
   });
 
-  result = result.replace(BARE_FILE_PATH_RE, (match, rawPath) => {
-    const localPath = normalizeLocalPath(rawPath);
-    if (!isNonImageFilePath(localPath)) return match;
-    if (!fs.existsSync(localPath)) {
-      logger?.warn?.(`[stream] local file not found: ${localPath}`);
-      return match;
-    }
-    return registerFile(localPath);
-  });
+  // 提取本地路径
+  const files = result.files
+    .filter((f) => f.isLocal && f.localPath)
+    .map((f) => f.localPath!);
 
-  return { text: result, files: Array.from(files.keys()) };
+  return { text: result.text, files };
 }
 
 function resolveGatewayAuthFromConfigFile(logger: Logger): string | undefined {
@@ -525,7 +439,6 @@ async function handleAICardStreaming(params: {
   const streamStartIso = new Date(streamStartAt).toISOString();
   let firstChunkAt: number | null = null;
   let chunkCount = 0;
-  let lastChunkLogAt = 0;
 
   try {
     const core = getDingtalkRuntime();
@@ -559,14 +472,6 @@ async function handleAICardStreaming(params: {
         logger.debug(
           `[stream] first chunk at ${firstChunkIso} (after ${firstChunkAt - streamStartAt}ms, len=${chunk.length}, start=${streamStartIso})`
         );
-      } else {
-        const nowLog = Date.now();
-        if (nowLog - lastChunkLogAt >= 1000) {
-          logger.debug(
-            `[stream] chunks=${chunkCount} totalLen=${accumulated.length} dt=${nowLog - streamStartAt}ms`
-          );
-          lastChunkLogAt = nowLog;
-        }
       }
       const now = Date.now();
       if (!firstFrameSent || now - lastUpdateTime >= updateInterval) {
@@ -583,13 +488,9 @@ async function handleAICardStreaming(params: {
         for (const filePath of files) {
           streamedFiles.add(filePath);
         }
-        await streamAICard(card, rendered, false, (msg) => logger.debug(msg));
+        await streamAICard(card, rendered, false);
         lastUpdateTime = now;
         firstFrameSent = true;
-        const pushIso = new Date(now).toISOString();
-        logger.debug(
-          `[stream] pushed update at ${pushIso} (len=${accumulated.length}, dt=${now - streamStartAt}ms, start=${streamStartIso})`
-        );
       }
     }
 
@@ -673,6 +574,7 @@ async function handleAICardStreaming(params: {
           });
         }
       }
+
       logger.info("AI Card failed; fallback message sent via SDK");
     } catch (fallbackErr) {
       logger.error(`Failed to send fallback message: ${String(fallbackErr)}`);
@@ -1157,13 +1059,15 @@ export async function handleDingtalkMessage(params: {
           });
         }
       }
+
     };
 
+    const replyFinalOnly = dingtalkCfgResolved.replyFinalOnly !== false;
     const deliverFinalOnly = async (
       payload: { text?: string; mediaUrl?: string; mediaUrls?: string[] },
       info?: { kind?: string }
     ) => {
-      if (!info || info.kind !== "final") return;
+      if (replyFinalOnly && (!info || info.kind !== "final")) return;
       await deliver(payload);
     };
 

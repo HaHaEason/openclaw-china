@@ -2,10 +2,12 @@
  * 飞书出站适配器
  */
 
-import { sendImageFeishu, sendMarkdownCardFeishu, sendMessageFeishu } from "./send.js";
+import { sendFileFeishu, sendImageFeishu, sendMarkdownCardFeishu, sendMessageFeishu } from "./send.js";
 import { getFeishuRuntime } from "./runtime.js";
 import type { FeishuConfig } from "./types.js";
 import { FeishuConfigSchema } from "./config.js";
+import { extractFilesFromText, extractImagesFromText, isHttpUrl, isImagePath, normalizeLocalPath } from "@openclaw-china/shared";
+import * as fs from "node:fs";
 
 export interface OutboundConfig {
   channels?: {
@@ -18,6 +20,10 @@ export interface SendResult {
   messageId: string;
   chatId?: string;
   conversationId?: string;
+}
+
+function isFeishuImageKey(value: string): boolean {
+  return /^img_v\d+_/i.test(value.trim());
 }
 
 function parseTarget(to: string): { targetId: string; receiveIdType: "chat_id" | "open_id" } {
@@ -59,26 +65,100 @@ export const feishuOutbound = {
 
     const { targetId, receiveIdType } = parseTarget(to);
 
+    // 使用 shared 模块提取文本中的图片
+    const { images } = extractImagesFromText(text, {
+      removeFromText: false, // 保留原文，因为 Markdown 卡片会处理图片
+      checkExists: false,
+      parseMarkdownImages: true,
+      parseHtmlImages: true,
+      parseBarePaths: true,
+    });
+
+    // 使用 shared 模块提取文本中的文件（非图片）
+    const { text: cleanedText, files } = extractFilesFromText(text, {
+      removeFromText: true,
+      checkExists: false,
+      parseBarePaths: true,
+      parseMarkdownLinks: true,
+    });
+
+    const localFiles = files
+      .filter((f) => f.isLocal && f.localPath && !isImagePath(f.localPath))
+      .map((f) => f.localPath as string)
+      .filter((p) => {
+        if (fs.existsSync(p)) return true;
+        console.warn(`[feishu] local file not found: ${p}`);
+        return false;
+      });
+
+    // 过滤出本地图片
+    const localImages = images.filter((img) => img.isLocal && img.localPath);
+
+    // 区分 Markdown/HTML 图片和裸本地路径
+    // Markdown 卡片模式会处理 Markdown/HTML 图片，但不会处理裸本地路径
+    // 使用 sourceKind 字段精确判断，避免字符串匹配的 URL 编码问题
+    const bareLocalImages = localImages.filter((img) => img.sourceKind === "bare");
+
     // Minimal runtime trace for markdown vs text path
     const sendMode = feishuCfg.sendMarkdownAsCard ? "interactive markdown card" : "text message";
     // eslint-disable-next-line no-console
     console.log(
-      `[feishu] outbound sendText via ${sendMode} (receive_id_type=${receiveIdType}, text_len=${text.length})`
+      `[feishu] outbound sendText via ${sendMode} (receive_id_type=${receiveIdType}, text_len=${text.length}, local_images=${localImages.length}, bare_local_images=${bareLocalImages.length}, local_files=${localFiles.length})`
     );
 
+    // 发送主消息
     const result = feishuCfg.sendMarkdownAsCard
       ? await sendMarkdownCardFeishu({
           cfg: feishuCfg,
           to: targetId,
-          text,
+          text: cleanedText,
           receiveIdType,
         })
       : await sendMessageFeishu({
           cfg: feishuCfg,
           to: targetId,
-          text,
+          text: cleanedText,
           receiveIdType,
         });
+
+    // 兜底补发逻辑：
+    // - 非卡片模式：补发所有本地图片
+    // - 卡片模式：只补发裸本地路径（Markdown/HTML 图片已被卡片处理）
+    const imagesToFallback = feishuCfg.sendMarkdownAsCard ? bareLocalImages : localImages;
+
+    if (imagesToFallback.length > 0) {
+      console.log(`[feishu] fallback: sending ${imagesToFallback.length} local images`);
+      for (const img of imagesToFallback) {
+        if (!img.localPath) continue;
+        try {
+          await sendImageFeishu({
+            cfg: feishuCfg,
+            to: targetId,
+            mediaUrl: img.localPath,
+            receiveIdType,
+          });
+        } catch (err) {
+          console.error(`[feishu] failed to send fallback image ${img.localPath}:`, err);
+        }
+      }
+    }
+
+    if (localFiles.length > 0) {
+      const uniqueFiles = Array.from(new Set(localFiles));
+      console.log(`[feishu] fallback: sending ${uniqueFiles.length} local files`);
+      for (const filePath of uniqueFiles) {
+        try {
+          await sendFileFeishu({
+            cfg: feishuCfg,
+            to: targetId,
+            mediaUrl: filePath,
+            receiveIdType,
+          });
+        } catch (err) {
+          console.error(`[feishu] failed to send fallback file ${filePath}:`, err);
+        }
+      }
+    }
 
     return {
       channel: "feishu",
@@ -114,12 +194,24 @@ export const feishuOutbound = {
 
     if (mediaUrl) {
       try {
-        const result = await sendImageFeishu({
-          cfg: feishuCfg,
-          to: targetId,
-          mediaUrl,
-          receiveIdType,
-        });
+        const sendAsImage = isFeishuImageKey(mediaUrl)
+          ? true
+          : isHttpUrl(mediaUrl)
+            ? isImagePath(new URL(mediaUrl).pathname)
+            : isImagePath(normalizeLocalPath(mediaUrl));
+        const result = sendAsImage
+          ? await sendImageFeishu({
+              cfg: feishuCfg,
+              to: targetId,
+              mediaUrl,
+              receiveIdType,
+            })
+          : await sendFileFeishu({
+              cfg: feishuCfg,
+              to: targetId,
+              mediaUrl,
+              receiveIdType,
+            });
         return {
           channel: "feishu",
           messageId: result.messageId,
@@ -127,7 +219,7 @@ export const feishuOutbound = {
           conversationId: result.chatId,
         };
       } catch (err) {
-        console.error(`[feishu] sendImageFeishu failed:`, err);
+        console.error(`[feishu] sendMedia failed:`, err);
         const fallbackText = `📎 ${mediaUrl}`;
         const result = await sendMessageFeishu({
           cfg: feishuCfg,
