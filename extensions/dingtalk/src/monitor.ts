@@ -110,6 +110,12 @@ let currentPromise: Promise<void> | null = null;
 /** 停止当前 Monitor */
 let currentStop: (() => void) | null = null;
 
+/** 消息去重缓存：streamMessageId -> 处理时间戳 */
+const processedMessages = new Map<string, number>();
+
+/** 去重缓存过期时间（毫秒） */
+const MESSAGE_DEDUP_TTL_MS = 60000;
+
 /**
  * 启动钉钉 Stream 连接监控
  * 
@@ -221,7 +227,7 @@ export async function monitorDingtalkProvider(opts: MonitorDingtalkOpts = {}): P
       // Register TOPIC_ROBOT callback.
       client.registerCallbackListener(TOPIC_ROBOT, (res) => {
         const streamMessageId = res?.headers?.messageId;
-        
+
         // 立即显式 ACK，防止钉钉重发消息
         if (streamMessageId) {
           try {
@@ -230,7 +236,25 @@ export async function monitorDingtalkProvider(opts: MonitorDingtalkOpts = {}): P
             logger.error(`failed to ACK message ${streamMessageId}: ${String(ackErr)}`);
           }
         }
-        
+
+        // 消息去重检查
+        if (streamMessageId) {
+          const now = Date.now();
+          const lastProcessed = processedMessages.get(streamMessageId);
+          if (lastProcessed && now - lastProcessed < MESSAGE_DEDUP_TTL_MS) {
+            logger.debug(`duplicate message ignored: ${streamMessageId}`);
+            return;
+          }
+          processedMessages.set(streamMessageId, now);
+
+          // 清理过期条目（每次处理时清理，避免内存泄漏）
+          for (const [id, time] of processedMessages) {
+            if (now - time > MESSAGE_DEDUP_TTL_MS) {
+              processedMessages.delete(id);
+            }
+          }
+        }
+
         try {
           // Parse message payload.
           const rawMessage = JSON.parse(res.data) as DingtalkRawMessage;

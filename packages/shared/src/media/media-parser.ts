@@ -70,6 +70,8 @@ export interface MediaParseOptions {
   checkExists?: boolean;
   /** 文件存在性检查函数（用于依赖注入） */
   existsSync?: (path: string) => boolean;
+  /** 是否解析行首 MEDIA: 指令，默认 false */
+  parseMediaLines?: boolean;
   /** 是否解析 Markdown 图片，默认 true */
   parseMarkdownImages?: boolean;
   /** 是否解析 HTML img 标签，默认 true */
@@ -214,6 +216,29 @@ const BARE_FILE_PATH_RE = new RegExp(
   String.raw`\`?((?:${UNIX_FILE_PATH}|${WINDOWS_FILE_PATH})\.(?:${NON_IMAGE_EXT_PATTERN}))\`?`,
   "gi"
 );
+
+// MEDIA: 行解析辅助
+const MEDIA_LINE_PREFIX = "MEDIA:";
+
+function unwrapMediaLinePayload(value: string): string | undefined {
+  const trimmed = value.trim();
+  if (trimmed.length < 2) return undefined;
+  const first = trimmed[0];
+  const last = trimmed[trimmed.length - 1];
+  if (first !== last) return undefined;
+  if (first !== `"` && first !== "'" && first !== "`") return undefined;
+  return trimmed.slice(1, -1).trim();
+}
+
+function cleanMediaLineCandidate(value: string): string {
+  return value.replace(/^[`"'[{(<]+/, "").replace(/[`"'\])}>.,;]+$/, "");
+}
+
+function splitMediaLineCandidates(payload: string): string[] {
+  const unwrapped = unwrapMediaLinePayload(payload);
+  if (unwrapped) return [unwrapped];
+  return payload.split(/\s+/).filter(Boolean);
+}
 
 // ============================================================================
 // 路径处理函数
@@ -404,6 +429,7 @@ export function extractMediaFromText(
     removeFromText = true,
     checkExists = false,
     existsSync,
+    parseMediaLines = false,
     parseMarkdownImages = true,
     parseHtmlImages = true,
     parseBarePaths = true,
@@ -437,6 +463,47 @@ export function extractMediaFromText(
     }
     return true;
   };
+
+  // 0. 解析行首 MEDIA: 指令
+  if (parseMediaLines) {
+    const lines = result.split("\n");
+    const keptLines: string[] = [];
+    for (const line of lines) {
+      const trimmedStart = line.trimStart();
+      if (!trimmedStart.startsWith(MEDIA_LINE_PREFIX)) {
+        keptLines.push(line);
+        continue;
+      }
+
+      const payload = trimmedStart.slice(MEDIA_LINE_PREFIX.length).trim();
+      if (!payload) {
+        keptLines.push(line);
+        continue;
+      }
+
+      const candidates = splitMediaLineCandidates(payload);
+      let addedAny = false;
+      for (const raw of candidates) {
+        const candidate = stripTitleFromUrl(cleanMediaLineCandidate(raw));
+        if (!candidate) continue;
+        if (!isHttpUrl(candidate) && !isLocalReference(candidate)) {
+          continue;
+        }
+        const media = createExtractedMedia(candidate, "bare", options);
+        if (addMedia(media)) {
+          addedAny = true;
+        }
+      }
+
+      if (!addedAny || !removeFromText) {
+        keptLines.push(line);
+      }
+    }
+
+    if (removeFromText) {
+      result = keptLines.join("\n");
+    }
+  }
 
   // 收集需要替换的位置（用于安全替换）
   type Replacement = { start: number; end: number; replacement: string };

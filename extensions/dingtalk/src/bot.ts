@@ -30,6 +30,7 @@ import {
   checkDmPolicy,
   checkGroupPolicy,
   resolveFileCategory,
+  extractMediaFromText,
   // 媒体解析模块
   extractFilesFromText,
   normalizeLocalPath,
@@ -97,6 +98,40 @@ function extractLocalFilesFromText(params: {
     .map((f) => f.localPath!);
 
   return { text: result.text, files };
+}
+
+/**
+ * 从文本中提取行首 MEDIA: 指令（支持 file:// / 绝对路径 / URL）
+ * 使用 shared 模块的 extractMediaFromText 实现
+ */
+function extractMediaLinesFromText(params: {
+  text: string;
+  logger?: Logger;
+}): { text: string; mediaUrls: string[] } {
+  const { text, logger } = params;
+
+  const result = extractMediaFromText(text, {
+    removeFromText: true,
+    checkExists: true,
+    existsSync: (p: string) => {
+      const exists = fs.existsSync(p);
+      if (!exists) {
+        logger?.warn?.(`[stream] local media not found: ${p}`);
+      }
+      return exists;
+    },
+    parseMediaLines: true,
+    parseMarkdownImages: false,
+    parseHtmlImages: false,
+    parseBarePaths: false,
+    parseMarkdownLinks: false,
+  });
+
+  const mediaUrls = result.all
+    .map((m) => (m.isLocal ? m.localPath ?? m.source : m.source))
+    .filter((m): m is string => typeof m === "string" && m.trim().length > 0);
+
+  return { text: result.text, mediaUrls };
 }
 
 function resolveGatewayAuthFromConfigFile(logger: Logger): string | undefined {
@@ -990,7 +1025,10 @@ export async function handleDingtalkMessage(params: {
     const chunkMode = (textApi?.resolveChunkMode as ((cfg: unknown, channel: string) => unknown) | undefined)?.(cfg, "dingtalk");
     const tableMode = "bullets";
 
-    const deliver = async (payload: { text?: string; mediaUrl?: string; mediaUrls?: string[] }) => {
+    const deliver = async (payload: { text?: string; mediaUrl?: string; mediaUrls?: string[] }, info?: { kind?: string }) => {
+      if (replyFinalOnly && (!info || info.kind !== "final")) {
+        return false;
+      }
       logger.debug(
         `[reply] payload=${JSON.stringify({
           hasText: typeof payload.text === "string",
@@ -1001,27 +1039,54 @@ export async function handleDingtalkMessage(params: {
       );
       const targetId = isGroup ? ctx.conversationId : ctx.senderId;
       const chatType = isGroup ? "group" : "direct";
+      let sent = false;
 
-      const mediaUrls = payload.mediaUrls ?? (payload.mediaUrl ? [payload.mediaUrl] : []);
-      if (mediaUrls.length > 0) {
-        for (const mediaUrl of mediaUrls) {
+      const sendMediaWithFallback = async (mediaUrl: string): Promise<void> => {
+        try {
           await sendMediaDingtalk({
             cfg: dingtalkCfgResolved,
             to: targetId,
             mediaUrl,
             chatType,
           });
+          sent = true;
+        } catch (err) {
+          logger.error(`[reply] sendMediaDingtalk failed: ${String(err)}`);
+          const fallbackText = `📎 ${mediaUrl}`;
+          await sendMessageDingtalk({
+            cfg: dingtalkCfgResolved,
+            to: targetId,
+            text: fallbackText,
+            chatType,
+          });
+          sent = true;
         }
-        return;
-      }
+      };
 
+      const payloadMediaUrls = payload.mediaUrls ?? (payload.mediaUrl ? [payload.mediaUrl] : []);
       const rawText = payload.text ?? "";
-      if (!rawText.trim()) return;
-      
+      const { text: textWithoutMediaLines, mediaUrls: mediaFromLines } = extractMediaLinesFromText({
+        text: rawText,
+        logger,
+      });
+
+      const mediaQueue: string[] = [];
+      const seenMedia = new Set<string>();
+      const addMedia = (value?: string) => {
+        const trimmed = value?.trim();
+        if (!trimmed) return;
+        if (seenMedia.has(trimmed)) return;
+        seenMedia.add(trimmed);
+        mediaQueue.push(trimmed);
+      };
+
+      for (const url of payloadMediaUrls) addMedia(url);
+      for (const url of mediaFromLines) addMedia(url);
+
       const converted = (textApi?.convertMarkdownTables as ((text: string, mode: string) => string) | undefined)?.(
-        rawText,
+        textWithoutMediaLines,
         tableMode
-      ) ?? rawText;
+      ) ?? textWithoutMediaLines;
 
       const processed = await processLocalImagesInMarkdown({
         text: converted,
@@ -1034,41 +1099,47 @@ export async function handleDingtalkMessage(params: {
         logger,
       });
       
-      const chunks =
-        textApi?.chunkTextWithMode && typeof textChunkLimitResolved === "number" && textChunkLimitResolved > 0
-          ? (textApi.chunkTextWithMode as (text: string, limit: number, mode: unknown) => string[])(cleanedText, textChunkLimitResolved, chunkMode)
-          : [cleanedText];
+      const hasText = cleanedText.trim().length > 0;
+      if (hasText) {
+        const chunks =
+          textApi?.chunkTextWithMode && typeof textChunkLimitResolved === "number" && textChunkLimitResolved > 0
+            ? (textApi.chunkTextWithMode as (text: string, limit: number, mode: unknown) => string[])(cleanedText, textChunkLimitResolved, chunkMode)
+            : [cleanedText];
 
-      for (const chunk of chunks) {
-        await sendMessageDingtalk({
-          cfg: dingtalkCfgResolved,
-          to: targetId,
-          text: chunk,
-          chatType,
-        });
+        for (const chunk of chunks) {
+          await sendMessageDingtalk({
+            cfg: dingtalkCfgResolved,
+            to: targetId,
+            text: chunk,
+            chatType,
+          });
+          sent = true;
+        }
       }
 
       if (localFiles.length > 0) {
         const uniqueFiles = Array.from(new Set(localFiles));
         for (const filePath of uniqueFiles) {
-          await sendMediaDingtalk({
-            cfg: dingtalkCfgResolved,
-            to: targetId,
-            mediaUrl: filePath,
-            chatType,
-          });
+          addMedia(filePath);
         }
       }
 
+      for (const mediaUrl of mediaQueue) {
+        await sendMediaWithFallback(mediaUrl);
+      }
+
+      if (!hasText && mediaQueue.length === 0) {
+        return false;
+      }
+      return sent;
     };
 
     const replyFinalOnly = dingtalkCfgResolved.replyFinalOnly !== false;
     const deliverFinalOnly = async (
       payload: { text?: string; mediaUrl?: string; mediaUrls?: string[] },
       info?: { kind?: string }
-    ) => {
-      if (replyFinalOnly && (!info || info.kind !== "final")) return;
-      await deliver(payload);
+    ): Promise<boolean> => {
+      return await deliver(payload, info);
     };
 
     const humanDelay = (replyApi?.resolveHumanDelayConfig as ((cfg: unknown, agentId?: string) => unknown) | undefined)?.(
@@ -1082,6 +1153,97 @@ export async function handleDingtalkMessage(params: {
     const createDispatcher = replyApi?.createReplyDispatcher as
       | ((opts: Record<string, unknown>) => Record<string, unknown>)
       | undefined;
+
+    const dispatchReplyWithBufferedBlockDispatcher = replyApi?.dispatchReplyWithBufferedBlockDispatcher as
+      | ((opts: Record<string, unknown>) => Promise<Record<string, unknown>>)
+      | undefined;
+
+    if (dispatchReplyWithBufferedBlockDispatcher) {
+      logger.debug(`dispatching to agent (buffered, session=${(route as Record<string, unknown>)?.sessionKey})`);
+      const deliveryState = { delivered: false, skippedNonSilent: 0 };
+      const buffered = {
+        lastText: "",
+        mediaUrls: [] as string[],
+        hasPayload: false,
+      };
+      const addBufferedMedia = (value?: string) => {
+        const trimmed = value?.trim();
+        if (!trimmed) return;
+        if (buffered.mediaUrls.includes(trimmed)) return;
+        buffered.mediaUrls.push(trimmed);
+      };
+      const result = await dispatchReplyWithBufferedBlockDispatcher({
+        ctx: finalCtx,
+        cfg,
+        dispatcherOptions: {
+          deliver: async (payload: unknown, info?: { kind?: string }) => {
+            if (!replyFinalOnly) {
+              const didSend = await deliverFinalOnly(
+                payload as { text?: string; mediaUrl?: string; mediaUrls?: string[] },
+                info
+              );
+              if (didSend) {
+                deliveryState.delivered = true;
+              }
+              return;
+            }
+
+            if (!info || info.kind !== "final") {
+              return;
+            }
+
+            const typed = payload as { text?: string; mediaUrl?: string; mediaUrls?: string[] };
+            buffered.hasPayload = true;
+            if (typeof typed.text === "string" && typed.text.trim()) {
+              buffered.lastText = typed.text;
+            }
+            if (Array.isArray(typed.mediaUrls)) {
+              for (const url of typed.mediaUrls) addBufferedMedia(url);
+            } else if (typed.mediaUrl) {
+              addBufferedMedia(typed.mediaUrl);
+            }
+          },
+          humanDelay,
+          onSkip: (_payload: unknown, info: { kind: string; reason: string }) => {
+            if (info.reason !== "silent") {
+              deliveryState.skippedNonSilent += 1;
+            }
+          },
+          onError: (err: unknown, info: { kind: string }) => {
+            logger.error(`${info.kind} reply failed: ${String(err)}`);
+          },
+        },
+      });
+
+      if (buffered.hasPayload) {
+        const didSend = await deliver(
+          {
+            text: buffered.lastText,
+            mediaUrls: buffered.mediaUrls.length ? buffered.mediaUrls : undefined,
+          },
+          { kind: "final" }
+        );
+        if (didSend) {
+          deliveryState.delivered = true;
+        }
+      }
+
+      if (!deliveryState.delivered && deliveryState.skippedNonSilent > 0) {
+        await sendMessageDingtalk({
+          cfg: dingtalkCfgResolved,
+          to: isGroup ? ctx.conversationId : ctx.senderId,
+          text: "No response generated. Please try again.",
+          chatType: isGroup ? "group" : "direct",
+        });
+      }
+
+      const counts = (result as Record<string, unknown>)?.counts as Record<string, unknown> | undefined;
+      const queuedFinal = (result as Record<string, unknown>)?.queuedFinal as unknown;
+      logger.debug(
+        `dispatch complete (queuedFinal=${typeof queuedFinal === "boolean" ? queuedFinal : "unknown"}, replies=${counts?.final ?? 0})`
+      );
+      return;
+    }
 
     const dispatcherResult = createDispatcherWithTyping
       ? createDispatcherWithTyping({
