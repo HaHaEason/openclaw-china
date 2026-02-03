@@ -105,7 +105,7 @@ openclaw plugins list
    - **应用 logo**：上传一个图标
    - **可见范围**：选择可以使用该应用的部门/成员
 
-  <img src="image/configuration/1770105469298.png" />
+<img src="image/configuration/1770105469298.png" />
 
 4. 点击「创建应用」
 
@@ -244,6 +244,18 @@ openclaw gateway restart
 2. 发送一条消息
 3. 查看 OpenClaw 日志确认消息接收
 4. 等待 AI 回复
+
+---
+
+## 步骤六：在个人微信使用
+
+### 1.回到企业微信后台
+
+回到企业微信后台的「我的企业」设置下的微信插件
+
+![微信插件](image/configuration/1770110656555.png)
+
+用个人微信扫码「邀请关注」的二维码就可以在个人微信上打开入口
 
 ---
 
