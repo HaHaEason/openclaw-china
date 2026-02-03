@@ -116,6 +116,28 @@ const processedMessages = new Map<string, number>();
 /** 去重缓存过期时间（毫秒） */
 const MESSAGE_DEDUP_TTL_MS = 60000;
 
+/** 重连与健康检查相关参数 */
+const WATCHDOG_INTERVAL_MS = 10000;
+const CONNECT_TIMEOUT_MS = 30000;
+const REGISTER_TIMEOUT_MS = 30000;
+const DISCONNECT_GRACE_MS = 15000;
+const MIN_RECONNECT_INTERVAL_MS = 10000;
+
+type DingtalkSocketLike = {
+  once: (event: string, listener: (...args: unknown[]) => void) => void;
+  terminate?: () => void;
+};
+
+type DingtalkClientState = {
+  connected?: boolean;
+  registered?: boolean;
+  socket?: DingtalkSocketLike;
+};
+
+function getClientState(client: DWClient): DingtalkClientState {
+  return client as unknown as DingtalkClientState;
+}
+
 /**
  * 启动钉钉 Stream 连接监控
  * 
@@ -170,9 +192,51 @@ export async function monitorDingtalkProvider(opts: MonitorDingtalkOpts = {}): P
 
   currentPromise = new Promise<void>((resolve, reject) => {
     let stopped = false;
+    let watchdogId: ReturnType<typeof setInterval> | null = null;
+    let lastSocket: DingtalkSocketLike | null = null;
+    let connectStartedAt = Date.now();
+    let lastConnectedAt: number | null = null;
+    let lastReconnectAt = 0;
+
+    const attachSocketListeners = () => {
+      const { socket } = getClientState(client);
+      if (!socket || socket === lastSocket) return;
+      lastSocket = socket;
+      socket.once("open", () => {
+        const now = Date.now();
+        connectStartedAt = now;
+        lastConnectedAt = now;
+        logger.info("Stream socket opened");
+      });
+      socket.once("close", () => {
+        logger.warn("Stream socket closed");
+      });
+      socket.once("error", (err) => {
+        logger.warn(`Stream socket error: ${String(err)}`);
+      });
+    };
+
+    const forceReconnect = (reason: string) => {
+      const now = Date.now();
+      if (now - lastReconnectAt < MIN_RECONNECT_INTERVAL_MS) {
+        return;
+      }
+      lastReconnectAt = now;
+      logger.warn(`[reconnect] forcing reconnect: ${reason}`);
+      try {
+        const { socket } = getClientState(client);
+        socket?.terminate?.();
+      } catch (err) {
+        logger.error(`failed to terminate socket: ${String(err)}`);
+      }
+    };
 
     // Cleanup state and disconnect the client.
     const cleanup = () => {
+      if (watchdogId) {
+        clearInterval(watchdogId);
+        watchdogId = null;
+      }
       if (currentClient === client) {
         currentClient = null;
         currentAccountId = null;
@@ -297,10 +361,52 @@ export async function monitorDingtalkProvider(opts: MonitorDingtalkOpts = {}): P
         }
       });
 
+      // Start watchdog to detect stale connections.
+      watchdogId = setInterval(() => {
+        if (stopped) return;
+        attachSocketListeners();
+
+        const now = Date.now();
+        const state = getClientState(client);
+        const connected = state.connected === true;
+        const registered = state.registered === true;
+
+        if (connected) {
+          lastConnectedAt = now;
+        }
+        // Connection never established or got stuck before register.
+        if (!connected && now - connectStartedAt > CONNECT_TIMEOUT_MS) {
+          forceReconnect("connect timeout");
+          connectStartedAt = now;
+          lastConnectedAt = null;
+          return;
+        }
+
+        if (connected && !registered && now - connectStartedAt > REGISTER_TIMEOUT_MS) {
+          forceReconnect("register timeout");
+          connectStartedAt = now;
+          lastConnectedAt = null;
+          return;
+        }
+
+        // Server signaled disconnect but socket stayed open.
+        if (!connected) {
+          const lastSeen = lastConnectedAt ?? connectStartedAt;
+          if (now - lastSeen > DISCONNECT_GRACE_MS) {
+            forceReconnect("client marked disconnected");
+            connectStartedAt = now;
+            lastConnectedAt = null;
+          }
+        }
+      }, WATCHDOG_INTERVAL_MS);
+
       // Start Stream connection.
+      connectStartedAt = Date.now();
+      lastConnectedAt = null;
+      attachSocketListeners();
       client.connect();
 
-      logger.info("Stream client connected");
+      logger.info("Stream client connect invoked");
     } catch (err) {
       logger.error(`failed to start Stream connection: ${String(err)}`);
       finalizeReject(err);
