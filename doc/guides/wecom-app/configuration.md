@@ -313,16 +313,46 @@ openclaw gateway restart
 
 这类问题通常不是“权限问题”，而是 **target 写法不正确** 或 OpenClaw 无法解析。
 
-**结论：最稳的写法是使用显式前缀**：
+#### ⚠️ 重要：target 不是"显示名/备注名"
 
-- 私聊用户：`user:<UserId>`（例如：`user:CaiHongYu`）
-- 群聊：`chatid:<ChatId>`（如果你拿到了 chatid）
+在 wecom-app 通道中，**target 不是"显示名/备注名"**，而是插件能解析的"地址格式"。
 
-**排查步骤**：
+**错误示例**：
 
-1. 确认你用的是 `user:` / `chatid:` 前缀，而不是“显示名/昵称”。
-2. 如果你只有显示名：优先去企业微信后台/通讯录确认真实 `UserId`。
-3. 查看 Gateway 日志中 wecom-app 的目录解析输出（关键词一般为 `wecom-app` / `directory` / `target`）。
+```bash
+# ❌ 错误：直接写用户名
+send CaiHongYu 你好
+# 报错：Unknown target "CaiHongYu"
+```
+
+**原因**：插件会把 `CaiHongYu` 当成一个"可解析的收件人标识"去查，但通讯录里并没有叫这个 key 的条目，所以报 **Unknown target**。
+
+**正确示例**：
+
+```bash
+# ✅ 正确：使用 user: 前缀
+send user:CaiHongYu 你好
+# 成功发送（插件会归一化为 user:caihongyu）
+```
+
+#### Target 语法规则
+
+**必须带类型前缀**，才能命中解析规则：
+
+- **私聊用户**：`user:<UserId>`（例如：`user:CaiHongYu`）
+- **群聊**：`chatid:<ChatId>`（如果你拿到了 chatid）
+
+**为什么需要前缀？**
+
+- 带 `user:`（或群聊的 `chatid:`）前缀，插件才能把它归一化成内部可投递标识
+- 单独一个名字通常无法唯一定位收件人
+- 插件会自动做大小写归一化（`user:CaiHongYu` → `user:caihongyu`）
+
+#### 排查步骤
+
+1. **确认前缀**：确认你用的是 `user:` / `chatid:` 前缀，而不是"显示名/昵称"。
+2. **获取真实 UserId**：如果你只有显示名，优先去企业微信后台/通讯录确认真实 `UserId`。
+3. **查看日志**：查看 Gateway 日志中 wecom-app 的目录解析输出（关键词一般为 `wecom-app` / `directory` / `target`）。
 
 > 💡 经验：显示名在不同租户/同名用户/大小写场景下会导致解析失败；用 `user:<UserId>` 基本不会错。
 
