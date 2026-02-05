@@ -32,7 +32,8 @@
 
 ### 对话效果
 
-<img src="image/configuration/1770107297696.png" width="50%" />
+<img src="image/configuration/1770107297696.png" width="48%" />
+<img src="image/configuration/1770273261225.png" width="48%" />
 
 </div>
 
@@ -137,7 +138,24 @@ openclaw plugins list
 
 ### 2. 填写服务器配置
 
-- **URL**：你的公网回调地址，例如 `https://your.domain/wecom-app`
+- **URL**：OpenClaw Gateway 的公网访问地址（企业微信会向这个地址发送消息回调）
+
+  **格式**：`<协议>://<域名或IP>:<端口>/<路径>`
+
+  **示例**：
+
+  - 使用域名（推荐）：`https://your.domain.com/wecom-app`
+  - 使用 IP 地址：`http://123.45.67.89:18789/wecom-app`
+
+  **说明**：
+
+  - **协议**：如果有域名和 SSL 证书，使用 `https://`；否则使用 `http://`
+  - **域名/IP**：填写你服务器的公网域名或公网 IP 地址
+  - **端口**：填写 OpenClaw Gateway 监听的端口（默认 `18789`）
+  - **路径**：必须与配置文件中的 `webhookPath` 一致（默认 `/wecom-app`）
+
+  > 💡 **如何获取公网 IP**：在服务器上运行 `curl ifconfig.me` 或访问 [ifconfig.me](https://ifconfig.me)
+  >
 - **Token**：自定义一个字符串，例如 `your-random-token`
 - **EncodingAESKey**：点击「随机获取」生成 43 位字符
 
@@ -201,7 +219,12 @@ openclaw config set channels.wecom-app.agentId 1000002
       "encodingAESKey": "your-43-char-encoding-aes-key",
       "corpId": "your-corp-id",
       "corpSecret": "your-app-secret",
-      "agentId": 1000002
+      "agentId": 1000002,
+      "inboundMedia": {
+        "enabled": true,
+        "maxBytes": 10485760,
+        "keepDays": 7
+      }
     }
   }
 }
@@ -209,16 +232,20 @@ openclaw config set channels.wecom-app.agentId 1000002
 
 ### 配置说明
 
-| 字段               | 必填 | 说明                                            |
-| :----------------- | :--: | :---------------------------------------------- |
-| `enabled`        |  ✅  | 是否启用该渠道                                  |
-| `webhookPath`    |  ✅  | 回调路径，需与企业微信后台配置一致              |
-| `token`          |  ✅  | 消息校验 Token，需与企业微信后台配置一致        |
-| `encodingAESKey` |  ✅  | 消息加密密钥（43 位），需与企业微信后台配置一致 |
-| `corpId`         |  ✅  | 企业 ID                                         |
-| `corpSecret`     |  ✅  | 应用的 Secret                                   |
-| `agentId`        |  ✅  | 应用的 AgentId                                  |
-| `welcomeText`    |  ❌  | 用户首次进入时的欢迎语                          |
+| 字段                      | 必填 | 说明                                                                    |
+| :------------------------ | :--: | :---------------------------------------------------------------------- |
+| `enabled`               |  ✅  | 是否启用该渠道                                                          |
+| `webhookPath`           |  ✅  | 回调路径，需与企业微信后台配置一致                                      |
+| `token`                 |  ✅  | 消息校验 Token，需与企业微信后台配置一致                                |
+| `encodingAESKey`        |  ✅  | 消息加密密钥（43 位），需与企业微信后台配置一致                         |
+| `corpId`                |  ✅  | 企业 ID                                                                 |
+| `corpSecret`            |  ✅  | 应用的 Secret                                                           |
+| `agentId`               |  ✅  | 应用的 AgentId                                                          |
+| `welcomeText`           |  ❌  | 用户首次进入时的欢迎语                                                  |
+| `inboundMedia.enabled`  |  ❌  | 是否启用入站媒体落盘（默认启用）                                        |
+| `inboundMedia.dir`      |  ❌  | 入站媒体归档目录（跨平台默认：`~/.openclaw/media/wecom-app/inbound`） |
+| `inboundMedia.maxBytes` |  ❌  | 单个入站媒体最大字节数（默认 10MB）                                     |
+| `inboundMedia.keepDays` |  ❌  | 入站媒体保留天数（默认 7 天；用于自动清理）                             |
 
 ---
 
@@ -259,7 +286,84 @@ openclaw gateway restart
 
 ---
 
+## 入站媒体（图片/语音/文件）落盘说明
+
+为了支持图片 OCR、回发原图、以及排查问题，wecom-app 会把入站媒体文件落盘保存。
+
+- 文件会被归档到：`inboundMedia.dir/YYYY-MM-DD/`
+- 消息正文里会显示：`[image] saved:<本地路径>`（该路径为稳定归档路径，便于后续处理）
+- 自动清理由 `inboundMedia.keepDays` 控制（默认 7 天）
+
+**为什么还会用 tmp 中转？**
+
+内部会先下载到系统临时目录，再原子移动到归档目录，以避免“半文件/下载失败”污染归档目录。
+
+**跨平台默认路径**
+
+- Linux/macOS：`~/.openclaw/media/wecom-app/inbound`
+- Windows：`%USERPROFILE%\.openclaw\media\wecom-app\inbound`
+
+如需自定义，请设置：`channels.wecom-app.inboundMedia.dir`
+
+---
+
 ## 常见问题
+
+### Q: Unknown target "xxx" / Action send requires a target？
+
+这类问题通常不是“权限问题”，而是 **target 写法不正确** 或 OpenClaw 无法解析。
+
+**结论：最稳的写法是使用显式前缀**：
+
+- 私聊用户：`user:<UserId>`（例如：`user:CaiHongYu`）
+- 群聊：`chatid:<ChatId>`（如果你拿到了 chatid）
+
+**排查步骤**：
+
+1. 确认你用的是 `user:` / `chatid:` 前缀，而不是“显示名/昵称”。
+2. 如果你只有显示名：优先去企业微信后台/通讯录确认真实 `UserId`。
+3. 查看 Gateway 日志中 wecom-app 的目录解析输出（关键词一般为 `wecom-app` / `directory` / `target`）。
+
+> 💡 经验：显示名在不同租户/同名用户/大小写场景下会导致解析失败；用 `user:<UserId>` 基本不会错。
+
+### Q: 为什么 SVG 发出去不是图片？
+
+企业微信自建应用对 **图片消息** 的支持通常偏向 `png/jpg`。`svg` 经常会被客户端当作“文件”，或者走图片通道失败。
+
+- 建议：发送 `png/jpg`。
+- 如果你必须发 `svg`：把它当 **文件** 发（本插件已对 `.svg` 强制按文件发送，避免误判）。
+
+### Q: 为什么 WAV/MP3 语音发不出去（ok=false）？
+
+企业微信的“语音消息(voice)”通常要求 `amr/speex` 等格式；`wav/mp3` 很常见会导致上传/发送失败，或无法按语音气泡展示。
+
+**推荐方案（自动兜底）**
+
+开启 `voiceTranscode.enabled=true` 后：
+
+- 系统存在 `ffmpeg`：遇到 wav/mp3 会 **自动转码为 amr** 再发送 voice
+- 没有 `ffmpeg`：会 **自动降级为 file 发送**（保证可达）
+
+配置示例（openclaw.json）：
+
+```jsonc
+{
+  "channels": {
+    "wecom-app": {
+      "voiceTranscode": {
+        "enabled": true,
+        "prefer": "amr"
+      }
+    }
+  }
+}
+```
+
+**手动转码（ffmpeg）**
+
+```bash
+ffmpeg -i in.wav -ar 8000 -ac 1 -c:a amr_nb out.amr
+```
 
 ### Q: 保存配置时提示验证失败？
 
@@ -349,6 +453,71 @@ curl ifconfig.me
   }
 }
 ```
+
+---
+
+## （可选）安装 wecom-app 运维/使用 Skill
+
+本仓库提供本地技能包：`extensions/wecom-app/skills/wecom-app-ops`，用于指导 wecom-app 常见操作（如何获取/规范化 target、如何回发图片/录音/文件、如何使用 saved 路径做 OCR、常见报错排障等）。
+
+**安装到全局**
+
+```bash
+mkdir -p ~/.openclaw/skills
+cp -a ~/.openclaw/extensions/openclaw-china/extensions/wecom-app/skills/wecom-app-ops ~/.openclaw/skills/
+```
+
+复制后一般无需重启网关；**如果你希望立刻出现在“可触发 skills 列表”里**，建议重启一次 Gateway 以刷新 skills 索引。
+
+---
+
+## wecom-app 已实现功能清单（Feature List）
+
+本插件当前已实现/覆盖：
+
+### 入站（接收消息）
+
+- Webhook 接收回调
+- 签名校验 + 解密/加密回包
+- 支持 **JSON + XML** 两种入站格式
+- 长文本分片（企业微信单条约 2048 bytes 限制）
+- stream 占位/刷新（为适配企业微信 5 秒响应限制的缓冲式输出）
+
+### 入站媒体（产品级留存）
+
+**Why / 设计动机**
+
+- 产品化目标是“消息里的 `saved:` 路径可长期复用”，而不是依赖 `/tmp` 这类易被清理的短期目录。
+- 这样 OCR/MCP、二次回发、归档/审计等流程才不会因为文件丢失而不稳定。
+- 支持 `image` / `voice` / `file` / `mixed`
+- 优先通过 `MediaId` 下载媒体；必要时回退 URL（如图片 PicUrl）
+- 媒体落盘：先 tmp 中转，再归档到 `inboundMedia.dir/YYYY-MM-DD/`
+- 消息体注入稳定路径：`[image] saved:/...` / `[voice] saved:/...` / `[file] saved:/...`
+- 过期清理：按 `inboundMedia.keepDays` 延迟清理（避免“回复后立刻删”导致 OCR/回发失败）
+- 大小限制：按 `inboundMedia.maxBytes` 限制单文件大小
+
+### 出站（主动发送）
+
+- 支持主动发送文本
+- 支持主动发送媒体（按 MIME/扩展名识别 image/voice/file）
+- Markdown 降级：`stripMarkdown()` 将 Markdown 转为企业微信可显示的纯文本
+
+### 目标解析与路由
+
+- 支持多种 target 输入格式：
+  - `wecom-app:user:<id>` / `wecom-app:group:<id>`
+  - `user:<id>` / `group:<id>`
+  - 裸 id（默认当 user）
+  - `xxx@accountId`（带账号选择）
+
+### 多账号与策略
+
+- 支持 `defaultAccount` + `accounts` 多账号
+- DM 策略：`dmPolicy`（open/pairing/allowlist/disabled）
+- 群策略：`groupPolicy`（open/allowlist/disabled）
+- 群 @ 要求：`requireMention`
+- allowlist：`allowFrom` / `groupAllowFrom`
+- 入站媒体配置：`inboundMedia.enabled/dir/maxBytes/keepDays`
 
 ---
 

@@ -2,6 +2,8 @@
  * 企业微信自建应用配置 schema
  */
 import { z } from "zod";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 import type {
   ResolvedWecomAppAccount,
@@ -36,6 +38,16 @@ const WecomAppAccountSchema = z.object({
       dir: z.string().optional(),
       maxBytes: z.number().optional(),
       keepDays: z.number().optional(),
+    })
+    .optional(),
+
+  // 语音发送策略（可选）：当遇到不支持的格式（如 wav/mp3）时，
+  // - enabled=true 且系统存在 ffmpeg：自动转码为 amr 后再发送 voice
+  // - 否则：降级为 file 发送（并可配合 caption 提示）
+  voiceTranscode: z
+    .object({
+      enabled: z.boolean().optional(),
+      prefer: z.enum(["amr"]).optional(),
     })
     .optional(),
 
@@ -77,6 +89,14 @@ export const WecomAppConfigJsonSchema = {
           dir: { type: "string" },
           maxBytes: { type: "number" },
           keepDays: { type: "number" },
+        },
+      },
+      voiceTranscode: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          enabled: { type: "boolean" },
+          prefer: { type: "string", enum: ["amr"] },
         },
       },
       welcomeText: { type: "string" },
@@ -259,7 +279,10 @@ export function resolveGroupAllowFrom(config: WecomAppAccountConfig): string[] {
 // 入站媒体设置
 // ─────────────────────────────────────────────────────────────────────────────
 
-const DEFAULT_INBOUND_MEDIA_DIR = "/root/.openclaw/media/wecom-app/inbound";
+// Cross-platform default: ~/.openclaw/media/wecom-app/inbound
+// - Linux/macOS: /home/<user>/.openclaw/...
+// - Windows: C:\Users\<user>\.openclaw\...
+const DEFAULT_INBOUND_MEDIA_DIR = join(homedir(), ".openclaw", "media", "wecom-app", "inbound");
 const DEFAULT_INBOUND_MEDIA_MAX_BYTES = 10 * 1024 * 1024; // 10MB
 const DEFAULT_INBOUND_MEDIA_KEEP_DAYS = 7;
 

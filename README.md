@@ -170,6 +170,17 @@ openclaw config set channels.wecom-app.agentId 1000002
 | 需要 IP 白名单 | ❌ | ✅ |
 | 配置复杂度 | 简单 | 中等 |
 
+**wecom-app 已实现功能清单（摘要）**
+
+- 入站：支持 JSON/XML 回调、验签与解密、长文本分片（2048 bytes）、stream 占位/刷新（5s 规则下缓冲）。
+- 入站媒体：image/voice/file/mixed 自动落盘，消息体写入 `saved:` 稳定路径；按 `keepDays` 延迟清理。
+  - 设计动机：避免使用 `/tmp` 造成“收到后很快被清理”，确保 OCR/MCP/回发等二次处理有稳定路径可依赖。
+- 出站：支持主动发送文本与媒体；支持 markdown→纯文本降级（stripMarkdown）。
+- 路由与目标：支持多种 target 解析（`wecom-app:user:..` / `user:..` / 裸 id / `@accountId`），减少 Unknown target。
+- 策略与多账号：支持 defaultAccount/accounts；dmPolicy/groupPolicy/allowlist/requireMention；inboundMedia(开关/dir/maxBytes/keepDays)。
+
+> 更完整说明见：`doc/guides/wecom-app/configuration.md`
+
 
 #### 企业微信（智能机器人）
 
@@ -209,6 +220,32 @@ openclaw config set channels.feishu.sendMarkdownAsCard true
 ```bash
 openclaw gateway --port 18789 --verbose
 ```
+
+### 4) （可选）安装本仓库自带 Skills
+
+本仓库在 `skills/` 目录下提供了一些可直接复制使用的本地技能包（AgentSkills）。
+
+**安装方式（推荐：Workspace 级）**
+
+把 `skills/<skill-name>` 复制到你的 OpenClaw 工作区：
+
+```bash
+# 在你的项目目录（workspace）下
+mkdir -p ./skills
+cp -a /path/to/openclaw-china/skills/wecom-app-ops ./skills/
+```
+
+**或安装方式（全局）**
+
+```bash
+mkdir -p ~/.openclaw/skills
+cp -a /path/to/openclaw-china/skills/wecom-app-ops ~/.openclaw/skills/
+```
+
+> 说明：Workspace > 全局（`~/.openclaw/skills`）> 内置 skills。复制后无需重启网关。
+
+当前内置示例：
+- `wecom-app-ops`：企业微信自建应用（wecom-app）日常操作指南（target/replyTo/回发图片/录音/文件、OCR/MCP、排障、媒体保留策略）
 
 ## 演示
 

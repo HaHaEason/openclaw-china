@@ -23,7 +23,14 @@ import {
   resolveInboundMediaMaxBytes,
   type PluginConfig,
 } from "./config.js";
-import { sendWecomAppMessage, downloadAndSendImage, downloadWecomMediaToFile, cleanupFile } from "./api.js";
+import {
+  sendWecomAppMessage,
+  downloadAndSendImage,
+  downloadWecomMediaToFile,
+  cleanupFile,
+  finalizeInboundMedia,
+  pruneInboundMediaDir,
+} from "./api.js";
 
 export type WecomAppDispatchHooks = {
   onChunk: (text: string) => void;
@@ -101,13 +108,17 @@ export async function enrichInboundContentWithMedia(params: {
 
   const mediaPaths: string[] = [];
 
-  // 清理函数：删除所有下载的临时文件
+  // 清理函数：
+  // - 入站媒体会在“入站解析阶段”就归档到 inbound/YYYY-MM-DD，并把最终路径写进消息体
+  // - cleanup 阶段只做（尽力而为的）过期清理，避免影响主流程
   const makeResult = (text: string) => ({
     text,
     mediaPaths,
     cleanup: async () => {
-      for (const p of mediaPaths) {
-        await cleanupFile(p);
+      try {
+        await pruneInboundMediaDir(account);
+      } catch {
+        // ignore
       }
     },
   });
@@ -123,8 +134,9 @@ export async function enrichInboundContentWithMedia(params: {
       if (mediaId) {
         const saved = await downloadWecomMediaToFile(account, mediaId, { maxBytes, prefix: "img" });
         if (saved.ok && saved.path) {
-          mediaPaths.push(saved.path);
-          return makeResult(`[image] saved:${saved.path}`);
+          const finalPath = await finalizeInboundMedia(account, saved.path);
+          mediaPaths.push(finalPath);
+          return makeResult(`[image] saved:${finalPath}`);
         }
         // 如果失败，回退到原始文本
         return makeResult(`[image] (save failed) ${saved.error ?? ""}`.trim());
@@ -136,8 +148,9 @@ export async function enrichInboundContentWithMedia(params: {
         try {
           const saved = await downloadWecomMediaToFile(account, url, { maxBytes, prefix: "img" });
           if (saved.ok && saved.path) {
-            mediaPaths.push(saved.path);
-            return makeResult(`[image] saved:${saved.path}`);
+            const finalPath = await finalizeInboundMedia(account, saved.path);
+            mediaPaths.push(finalPath);
+            return makeResult(`[image] saved:${finalPath}`);
           }
         } catch {
           // 忽略
@@ -158,8 +171,9 @@ export async function enrichInboundContentWithMedia(params: {
       if (mediaId) {
         const saved = await downloadWecomMediaToFile(account, mediaId, { maxBytes, prefix: "file" });
         if (saved.ok && saved.path) {
-          mediaPaths.push(saved.path);
-          return makeResult(`[file] saved:${saved.path}`);
+          const finalPath = await finalizeInboundMedia(account, saved.path);
+          mediaPaths.push(finalPath);
+          return makeResult(`[file] saved:${finalPath}`);
         }
         return makeResult(`[file] (save failed) ${saved.error ?? ""}`.trim());
       }
@@ -179,12 +193,13 @@ export async function enrichInboundContentWithMedia(params: {
       if (mediaId) {
         const saved = await downloadWecomMediaToFile(account, mediaId, { maxBytes, prefix: "voice" });
         if (saved.ok && saved.path) {
-          mediaPaths.push(saved.path);
+          const finalPath = await finalizeInboundMedia(account, saved.path);
+          mediaPaths.push(finalPath);
           // 如果有识别文本，包含它以便 Agent 看到转录内容
           if (recognition) {
-            return makeResult(`[voice] saved:${saved.path}\n[recognition] ${recognition}`);
+            return makeResult(`[voice] saved:${finalPath}\n[recognition] ${recognition}`);
           }
-          return makeResult(`[voice] saved:${saved.path}`);
+          return makeResult(`[voice] saved:${finalPath}`);
         }
         // 回退：如果保存失败，包含识别文本
         if (recognition) {
@@ -230,8 +245,9 @@ export async function enrichInboundContentWithMedia(params: {
             try {
               const saved = await downloadWecomMediaToFile(account, mediaId, { maxBytes, prefix: "img" });
               if (saved.ok && saved.path) {
-                mediaPaths.push(saved.path);
-                parts.push(`[image] saved:${saved.path}`);
+                const finalPath = await finalizeInboundMedia(account, saved.path);
+                mediaPaths.push(finalPath);
+                parts.push(`[image] saved:${finalPath}`);
               } else {
                 const url = String(typed.image?.url ?? "").trim();
                 parts.push(url ? `[image] ${url}` : "[image]");
