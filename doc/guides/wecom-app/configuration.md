@@ -307,6 +307,43 @@ openclaw gateway restart
 
 ## 常见问题
 
+### Q: Unknown target "xxx" / Action send requires a target？
+
+这类问题通常不是“权限问题”，而是 **target 写法不正确** 或 OpenClaw 无法解析。
+
+**结论：最稳的写法是使用显式前缀**：
+
+- 私聊用户：`user:<UserId>`（例如：`user:CaiHongYu`）
+- 群聊：`chatid:<ChatId>`（如果你拿到了 chatid）
+
+**排查步骤**：
+
+1. 确认你用的是 `user:` / `chatid:` 前缀，而不是“显示名/昵称”。
+2. 如果你只有显示名：优先去企业微信后台/通讯录确认真实 `UserId`。
+3. 查看 Gateway 日志中 wecom-app 的目录解析输出（关键词一般为 `wecom-app` / `directory` / `target`）。
+
+> 💡 经验：显示名在不同租户/同名用户/大小写场景下会导致解析失败；用 `user:<UserId>` 基本不会错。
+
+### Q: 为什么 SVG 发出去不是图片？
+
+企业微信自建应用对 **图片消息** 的支持通常偏向 `png/jpg`。`svg` 经常会被客户端当作“文件”，或者走图片通道失败。
+
+- 建议：发送 `png/jpg`。
+- 如果你必须发 `svg`：把它当 **文件** 发（本插件已对 `.svg` 强制按文件发送，避免误判）。
+
+### Q: 为什么 WAV 语音发不出去（ok=false）？
+
+企业微信语音消息通常要求 `amr/speex` 等格式；`wav` 很常见会导致上传/发送失败。
+
+- 建议：把 `wav` 转为 `amr` 后发送。
+- 示例（ffmpeg）：
+
+```bash
+ffmpeg -i in.wav -ar 8000 -ac 1 -c:a amr_nb out.amr
+```
+
+> 插件在检测到 `.wav` 时会输出更明确的 hint，方便定位。
+
 ### Q: 保存配置时提示验证失败？
 
 1. 检查 OpenClaw 是否已启动并监听正确端口
