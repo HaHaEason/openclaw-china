@@ -12,8 +12,9 @@ const dingtalkPath = path.join(root, "extensions", "dingtalk", "package.json");
 const feishuPath = path.join(root, "extensions", "feishu", "package.json");
 const wecomPath = path.join(root, "extensions", "wecom", "package.json");
 const wecomAppPath = path.join(root, "extensions", "wecom-app", "package.json");
+const qqbotPath = path.join(root, "extensions", "qqbot", "package.json");
 const channelsPath = path.join(root, "packages", "channels", "package.json");
-const channelIds = ["dingtalk", "feishu", "wecom", "wecom-app"];
+const channelIds = ["dingtalk", "feishu", "wecom", "wecom-app", "qqbot"];
 
 function printUsage() {
   console.log(`
@@ -147,6 +148,7 @@ const dingtalkPkg = readJson(dingtalkPath);
 const feishuPkg = readJson(feishuPath);
 const wecomPkg = readJson(wecomPath);
 const wecomAppPkg = readJson(wecomAppPath);
+const qqbotPkg = readJson(qqbotPath);
 const channelsPkg = readJson(channelsPath);
 
 const originalShared = readJson(sharedPath);
@@ -154,6 +156,7 @@ const originalDingtalk = readJson(dingtalkPath);
 const originalFeishu = readJson(feishuPath);
 const originalWecom = readJson(wecomPath);
 const originalWecomApp = readJson(wecomAppPath);
+const originalQqbot = readJson(qqbotPath);
 const originalChannels = readJson(channelsPath);
 
 try {
@@ -163,6 +166,7 @@ try {
     feishu: { pkg: feishuPkg, path: feishuPath },
     wecom: { pkg: wecomPkg, path: wecomPath },
     "wecom-app": { pkg: wecomAppPkg, path: wecomAppPath },
+    qqbot: { pkg: qqbotPkg, path: qqbotPath },
   };
 
   if (options.mode === "all") {
@@ -171,6 +175,7 @@ try {
     const nextFeishu = getNextVersion(feishuPkg.name, feishuPkg.version);
     const nextWecom = getNextVersion(wecomPkg.name, wecomPkg.version);
     const nextWecomApp = getNextVersion(wecomAppPkg.name, wecomAppPkg.version);
+    const nextQqbot = getNextVersion(qqbotPkg.name, qqbotPkg.version);
     const nextChannels = getNextVersion(channelsPkg.name, channelsPkg.version);
 
     sharedPkg.version = nextShared;
@@ -196,18 +201,25 @@ try {
     wecomAppPkg.dependencies = wecomAppPkg.dependencies ?? {};
     wecomAppPkg.dependencies["@openclaw-china/shared"] = nextShared;
 
+    qqbotPkg.version = nextQqbot;
+    qqbotPkg.private = false;
+    qqbotPkg.dependencies = qqbotPkg.dependencies ?? {};
+    qqbotPkg.dependencies["@openclaw-china/shared"] = nextShared;
+
     channelsPkg.version = nextChannels;
     channelsPkg.dependencies = channelsPkg.dependencies ?? {};
     channelsPkg.dependencies["@openclaw-china/dingtalk"] = nextDingtalk;
     channelsPkg.dependencies["@openclaw-china/feishu"] = nextFeishu;
     channelsPkg.dependencies["@openclaw-china/wecom"] = nextWecom;
     channelsPkg.dependencies["@openclaw-china/wecom-app"] = nextWecomApp;
+    channelsPkg.dependencies["@openclaw-china/qqbot"] = nextQqbot;
 
     writeJson(sharedPath, sharedPkg);
     writeJson(dingtalkPath, dingtalkPkg);
     writeJson(feishuPath, feishuPkg);
     writeJson(wecomPath, wecomPkg);
     writeJson(wecomAppPath, wecomAppPkg);
+    writeJson(qqbotPath, qqbotPkg);
     writeJson(channelsPath, channelsPkg);
 
     run("pnpm -F @openclaw-china/shared build");
@@ -215,6 +227,7 @@ try {
     run("pnpm -F @openclaw-china/feishu build");
     run("pnpm -F @openclaw-china/wecom build");
     run("pnpm -F @openclaw-china/wecom-app build");
+    run("pnpm -F @openclaw-china/qqbot build");
     run("pnpm -F @openclaw-china/channels build");
 
     run("npm publish --access public", path.join(root, "packages", "shared"));
@@ -222,6 +235,7 @@ try {
     run("npm publish --access public", path.join(root, "extensions", "feishu"));
     run("npm publish --access public", path.join(root, "extensions", "wecom"));
     run("npm publish --access public", path.join(root, "extensions", "wecom-app"));
+    run("npm publish --access public", path.join(root, "extensions", "qqbot"));
     run("npm publish --access public", path.join(root, "packages", "channels"));
   } else {
     if (!channelMap[options.channel]) {
@@ -307,6 +321,10 @@ try {
     originalWecomApp.dependencies["@openclaw-china/shared"] =
       originalWecomApp.dependencies["@openclaw-china/shared"] ?? "workspace:*";
   }
+  if (originalQqbot.dependencies) {
+    originalQqbot.dependencies["@openclaw-china/shared"] =
+      originalQqbot.dependencies["@openclaw-china/shared"] ?? "workspace:*";
+  }
   if (originalChannels.dependencies) {
     originalChannels.dependencies["@openclaw-china/dingtalk"] =
       originalChannels.dependencies["@openclaw-china/dingtalk"] ?? "workspace:*";
@@ -316,6 +334,8 @@ try {
       originalChannels.dependencies["@openclaw-china/wecom"] ?? "workspace:*";
     originalChannels.dependencies["@openclaw-china/wecom-app"] =
       originalChannels.dependencies["@openclaw-china/wecom-app"] ?? "workspace:*";
+    originalChannels.dependencies["@openclaw-china/qqbot"] =
+      originalChannels.dependencies["@openclaw-china/qqbot"] ?? "workspace:*";
   }
 
   writeJson(sharedPath, originalShared);
@@ -323,5 +343,6 @@ try {
   writeJson(feishuPath, originalFeishu);
   writeJson(wecomPath, originalWecom);
   writeJson(wecomAppPath, originalWecomApp);
+  writeJson(qqbotPath, originalQqbot);
   writeJson(channelsPath, originalChannels);
 }
