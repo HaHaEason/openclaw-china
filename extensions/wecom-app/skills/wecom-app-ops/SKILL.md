@@ -1,6 +1,6 @@
 ---
 name: wecom-app-ops
-description: 企业微信自建应用（wecom-app）运维与使用技能包。用于：在 wecom-app 渠道中定位并发送图片/文件/录音；从入站 media 目录读取 saved: 路径；获取/规范化 target（user:xxx / chatid / replyTo）；排查发送失败（requires a target / Unknown target / ok=false）；以及配置入站媒体保留策略（inboundMedia.keepDays/dir）。
+description: 企业微信自建应用（wecom-app）运维与使用技能包。用于：定位并回发图片/语音/文件；使用 saved: 稳定路径做 OCR/MCP/二次处理；规范 target（wecom-app:user:xxx / user:xxx / 裸ID / @accountId）；排查发送失败；配置入站媒体保留策略与语音转码策略。
 ---
 
 # wecom-app 运维/使用规范（本地技能）
@@ -11,7 +11,8 @@ description: 企业微信自建应用（wecom-app）运维与使用技能包。�
 
 - **A. 回发媒体（图片/录音/文件）**：需要拿到本地路径 + 正确的 `target`（通常 `user:<name>`）
 - **B. 从消息里拿 saved: 路径做 OCR/二次处理**：使用 `saved:/.../inbound/YYYY-MM-DD/...` 的稳定路径
-- **C. 修复“找不到图片/自动删除”**：检查 wecom-app 的 `inboundMedia.keepDays/dir` 与插件版本
+- **C. 修复“找不到图片/自动删除”**：检查 wecom-app 的 `inboundMedia.keepDays/dir/maxBytes`
+- **D. 语音发不出去**：优先 `.amr/.speex`，或开启 `voiceTranscode.enabled`
 
 ---
 
@@ -21,8 +22,12 @@ description: 企业微信自建应用（wecom-app）运维与使用技能包。�
 使用 `message.send` 向 wecom-app 主动发消息时，必须提供可解析 target（否则会报 `Action send requires a target.`）。
 
 常见可用形式（以本环境为准）：
-- `target: "user:<name>"`（例如 `user:CaiHongYu`）
-- 群聊通常是 `chatid:<id>`（若插件/环境提供）
+- `target: "wecom-app:user:<userId>"`
+- `target: "user:<userId>"`
+- `target: "<userId>"`（裸 ID，插件会按用户 ID 处理）
+- `target: "user:<userId>@<accountId>"`（多账号场景）
+
+> 注意：当前 wecom-app 出站实现以用户私聊为主，运维侧不要依赖 `chatid:<id>` 作为通用 target 格式。
 
 ### 1.2 replyTo 怎么用
 - 如果你要“回复当前对话”，优先使用消息的 `message_id` 作为 `replyTo`。
@@ -34,14 +39,14 @@ description: 企业微信自建应用（wecom-app）运维与使用技能包。�
 
 若仍报 `Unknown target`：
 1) 先确认是 **私聊** 还是 **群聊**：
-   - 私聊：需要 `user:<userId>`
-   - 群聊：需要 `chatid:<chatId>`（群名几乎不可用）
+  - 私聊：使用 `user:<userId>`（推荐）
+  - 群聊：本技能默认不走该路径（请先确认插件是否已实现对应目标解析）
 2) 让对方（或你自己）在企业微信里再发一条消息（任意内容），以便系统记录真实标识。
 3) 从以下任意来源抓取真实的 `userId/chatId`：
    - OpenClaw / wecom-app 插件日志（`~/.openclaw/logs/`）
    - 或把“收到消息时的原始字段/报错日志”贴出来，我来反推。
 4) 拿到真实值后再发：
-   - `target: "user:<userId>"` 或 `target: "chatid:<chatId>"`
+  - `target: "user:<userId>"`（或 `wecom-app:user:<userId>`）
 
 ---
 
@@ -60,6 +65,7 @@ wecom-app 现在会把入站媒体归档到：
 
 ### 2.2 临时目录（不建议依赖）
 - `/tmp/wecom-app-media/` 只作为下载中转，不保证长期存在。
+- Windows 也同理：临时目录仅中转，不作为业务引用路径。
 
 ---
 
@@ -86,6 +92,7 @@ wecom-app 现在会把入站媒体归档到：
 - 你可以开启 `voiceTranscode.enabled=true`：
   - 系统存在 `ffmpeg` 时：遇到 wav/mp3 会 **自动转码为 amr** 再按 voice 发送
   - 没有 `ffmpeg` 时：会 **自动降级为 file 发送**（保证可达）
+  - 若 `mediaUrl` 是远程 URL，当前实现会直接走 file 降级（不做“下载后再转码”）
 
 配置示例（openclaw.json）：
 ```jsonc
@@ -121,10 +128,15 @@ ffmpeg -i in.wav -ar 8000 -ac 1 -c:a amr_nb out.amr
 
 ### 4.2 `Unknown target` / 发送 ok=false
 - 优先确认 target 是否能解析（`user:<name>` vs 内部 id）。
-- 尝试换成另一种 target（若有）或让用户提供 chatid。
+- 尝试 `wecom-app:user:<id>` / `user:<id>` / `<id>` 三种格式。
+- 多账号时追加 `@accountId`，例如：`user:alice@default`。
 - 检查附件路径是否存在（文件是否被清理）。
 
-### 4.3 图片发不出去但文件存在
+### 4.3 `Account not configured for active sending`
+- 缺少 `corpId` / `corpSecret` / `agentId` 任一项时会出现。
+- 这类错误先修配置，不是 target 问题。
+
+### 4.4 图片发不出去但文件存在
 - 核对文件大小是否超出渠道限制。
 - 若是 inbound 归档文件：确保 OpenClaw 进程对该文件可读。
 
@@ -155,7 +167,15 @@ ffmpeg -i in.wav -ar 8000 -ac 1 -c:a amr_nb out.amr
 
 ---
 
-## 6) MCP OCR（识别图片文字）
+## 6) 文本与流式发送行为（实现对齐）
+
+- wecom-app webhook 会先返回 stream 占位，再在后台推送最终内容。
+- 推送前会做 Markdown 降级（`stripMarkdown`）。
+- 企业微信单条文本限制 2048 bytes，超出会自动分段发送。
+
+---
+
+## 7) MCP OCR（识别图片文字）
 
 当用户说“记得调用 mcp 识别图片”，用 `mcporter` 调用：
 - `zai-mcp-server.extract_text_from_screenshot(image_source: <saved-path>, prompt: <说明>)`

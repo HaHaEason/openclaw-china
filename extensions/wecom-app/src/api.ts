@@ -538,7 +538,7 @@ export async function downloadWecomMediaToFile(
  * 发送企业微信应用消息
  * 
  * @param account - 已解析的账户配置
- * @param target - 发送目标 (userId 或 chatid)
+ * @param target - 发送目标 (userId)
  * @param message - 消息内容 (会自动移除 Markdown 格式)
  */
 export async function sendWecomAppMessage(
@@ -561,19 +561,8 @@ export async function sendWecomAppMessage(
     msgtype: "text",
     agentid: account.agentId,
     text: { content: text },
+    touser: target.userId,
   };
-
-  if (target.chatid) {
-    payload.chatid = target.chatid;
-  } else if (target.userId) {
-    payload.touser = target.userId;
-  } else {
-    return {
-      ok: false,
-      errcode: -1,
-      errmsg: "No target specified (need userId or chatid)",
-    };
-  }
 
   // 注意：企业微信 API 要求 access_token 作为查询参数传递。
   // 这可能会在服务器日志、浏览器历史和引用头中暴露令牌。
@@ -622,19 +611,8 @@ export async function sendWecomAppMarkdownMessage(
     msgtype: "markdown",
     agentid: account.agentId,
     markdown: { content: markdownContent },
+    touser: target.userId,
   };
-
-  if (target.chatid) {
-    payload.chatid = target.chatid;
-  } else if (target.userId) {
-    payload.touser = target.userId;
-  } else {
-    return {
-      ok: false,
-      errcode: -1,
-      errmsg: "No target specified (need userId or chatid)",
-    };
-  }
 
   const resp = await fetch(
     `https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${encodeURIComponent(token)}`,
@@ -799,19 +777,8 @@ export async function sendWecomAppImageMessage(
     msgtype: "image",
     agentid: account.agentId,
     image: { media_id: mediaId },
+    touser: target.userId,
   };
-
-  if (target.chatid) {
-    payload.chatid = target.chatid;
-  } else if (target.userId) {
-    payload.touser = target.userId;
-  } else {
-    return {
-      ok: false,
-      errcode: -1,
-      errmsg: "No target specified (need userId or chatid)",
-    };
-  }
 
   const resp = await fetch(
     `https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${encodeURIComponent(token)}`,
@@ -987,19 +954,8 @@ export async function sendWecomAppVoiceMessage(
     msgtype: "voice",
     agentid: account.agentId,
     voice: { media_id: mediaId },
+    touser: target.userId,
   };
-
-  if (target.chatid) {
-    payload.chatid = target.chatid;
-  } else if (target.userId) {
-    payload.touser = target.userId;
-  } else {
-    return {
-      ok: false,
-      errcode: -1,
-      errmsg: "No target specified (need userId or chatid)",
-    };
-  }
 
   const resp = await fetch(
     `https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${encodeURIComponent(token)}`,
@@ -1200,19 +1156,8 @@ export async function sendWecomAppFileMessage(
     agentid: account.agentId,
     file: { media_id: mediaId },
     safe: 0,
+    touser: target.userId,
   };
-
-  if (target.chatid) {
-    payload.chatid = target.chatid;
-  } else if (target.userId) {
-    payload.touser = target.userId;
-  } else {
-    return {
-      ok: false,
-      errcode: -1,
-      errmsg: "No target specified (need userId or chatid)",
-    };
-  }
 
   const resp = await fetch(
     `https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${encodeURIComponent(token)}`,

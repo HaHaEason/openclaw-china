@@ -5,9 +5,6 @@
 /** DM 消息策略 */
 export type WecomAppDmPolicy = "open" | "pairing" | "allowlist" | "disabled";
 
-/** 群组消息策略 */
-export type WecomAppGroupPolicy = "open" | "allowlist" | "disabled";
-
 /**
  * 企业微信自建应用账户配置
  * 相比普通 wecom 智能机器人，增加了 corpId, corpSecret, agentId 用于主动发送消息
@@ -65,13 +62,6 @@ export type WecomAppAccountConfig = {
   dmPolicy?: WecomAppDmPolicy;
   /** DM 允许列表 */
   allowFrom?: string[];
-
-  /** 群组策略 */
-  groupPolicy?: WecomAppGroupPolicy;
-  /** 群组允许列表 */
-  groupAllowFrom?: string[];
-  /** 是否需要 @ 提及 */
-  requireMention?: boolean;
 };
 
 /**
@@ -109,10 +99,8 @@ export type ResolvedWecomAppAccount = {
 
 /** 消息发送目标 */
 export type WecomAppSendTarget = {
-  /** 用户 ID (与 chatid 二选一) */
-  userId?: string;
-  /** 群聊 ID (与 userId 二选一) */
-  chatid?: string;
+  /** 用户 ID */
+  userId: string;
 };
 
 /** Access Token 缓存条目 */
@@ -129,8 +117,6 @@ export type WecomAppInboundBase = {
   MsgId?: string;
   msgid?: string;
   aibotid?: string;
-  chattype?: "single" | "group";
-  chatid?: string;
   response_url?: string;
   from?: { userid?: string; corpid?: string };
   FromUserName?: string;

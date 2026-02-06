@@ -10,7 +10,6 @@ import type {
   WecomAppAccountConfig,
   WecomAppConfig,
   WecomAppDmPolicy,
-  WecomAppGroupPolicy,
 } from "./types.js";
 
 /** 默认账户 ID */
@@ -55,9 +54,6 @@ const WecomAppAccountSchema = z.object({
   welcomeText: z.string().optional(),
   dmPolicy: z.enum(["open", "pairing", "allowlist", "disabled"]).optional(),
   allowFrom: z.array(z.string()).optional(),
-  groupPolicy: z.enum(["open", "allowlist", "disabled"]).optional(),
-  groupAllowFrom: z.array(z.string()).optional(),
-  requireMention: z.boolean().optional(),
 });
 
 export const WecomAppConfigSchema = WecomAppAccountSchema.extend({
@@ -102,9 +98,6 @@ export const WecomAppConfigJsonSchema = {
       welcomeText: { type: "string" },
       dmPolicy: { type: "string", enum: ["open", "pairing", "allowlist", "disabled"] },
       allowFrom: { type: "array", items: { type: "string" } },
-      groupPolicy: { type: "string", enum: ["open", "allowlist", "disabled"] },
-      groupAllowFrom: { type: "array", items: { type: "string" } },
-      requireMention: { type: "boolean" },
       maxFileSizeMB: { type: "number" },
       defaultAccount: { type: "string" },
       accounts: {
@@ -258,21 +251,8 @@ export function resolveDmPolicy(config: WecomAppAccountConfig): WecomAppDmPolicy
   return (config.dmPolicy ?? "pairing") as WecomAppDmPolicy;
 }
 
-export function resolveGroupPolicy(config: WecomAppAccountConfig): WecomAppGroupPolicy {
-  return (config.groupPolicy ?? "open") as WecomAppGroupPolicy;
-}
-
-export function resolveRequireMention(config: WecomAppAccountConfig): boolean {
-  if (typeof config.requireMention === "boolean") return config.requireMention;
-  return true;
-}
-
 export function resolveAllowFrom(config: WecomAppAccountConfig): string[] {
   return config.allowFrom ?? [];
-}
-
-export function resolveGroupAllowFrom(config: WecomAppAccountConfig): string[] {
-  return config.groupAllowFrom ?? [];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

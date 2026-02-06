@@ -5,7 +5,6 @@
  *
  * 使用示例：
  * - 私聊：sendWecomDM("caihongyu", { text: "Hello" })
- * - 群聊：sendWecomGroup("wrkxxxxxxx", { text: "Hello" })
  */
 
 import type { ResolvedWecomAppAccount, WecomAppSendTarget } from "./types.js";
@@ -39,16 +38,14 @@ export type SendResult = {
  *
  * 输入格式（用户侧传入）：
  * - 私聊："caihongyu" 或 "user:caihongyu"
- * - 群聊："wrkxxxxxx" 或 "group:wrkxxxxxx"
- * - 带 channel 前缀："wecom-app:user:caihongyu" 或 "wecom-app:group:xxx"
+ * - 带 channel 前缀："wecom-app:user:caihongyu"
  *
  * 输出格式（OpenClaw 标准）：
  * - 私聊："user:caihongyu"
- * - 群聊："group:wrkxxxxxx"
  */
 export function normalizeTarget(
   target: string,
-  type: "user" | "group"
+  type: "user"
 ): string {
   let normalized = target.trim();
 
@@ -62,28 +59,20 @@ export function normalizeTarget(
   if (type === "user" && normalized.startsWith("user:")) {
     return normalized;
   }
-  if (type === "group" && normalized.startsWith("group:")) {
-    return normalized;
-  }
 
   // 移除可能存在的错误前缀
   if (normalized.startsWith("user:")) {
     normalized = normalized.slice(5);
-  } else if (normalized.startsWith("group:")) {
-    normalized = normalized.slice(6);
   }
 
   // 添加正确的类型前缀
-  return `${type}:${normalized}`;
+  return `user:${normalized}`;
 }
 
 /**
  * 将规范化的 target 字符串解析为 WecomAppSendTarget
  */
 export function parseTarget(target: string): WecomAppSendTarget {
-  if (target.startsWith("group:")) {
-    return { chatid: target.slice(6) };
-  }
   if (target.startsWith("user:")) {
     return { userId: target.slice(5) };
   }
@@ -130,40 +119,6 @@ export async function sendWecomDM(
   }
 
   const normalizedTarget = normalizeTarget(userId, "user");
-  const target = parseTarget(normalizedTarget);
-
-  return sendMessage(account, target, options);
-}
-
-/**
- * 发送群聊消息
- *
- * @param account - 已解析的账户配置
- * @param chatId - 群聊 ID（如 "wrkxxxxxx"），支持带 "group:" 前缀
- * @param options - 消息选项
- *
- * @example
- * ```ts
- * // 发送文本
- * await sendWecomGroup(account, "wrkxxxxxx", { text: "Hello group!" });
- *
- * // 发送图片
- * await sendWecomGroup(account, "wrkxxxxxx", { mediaPath: "/path/to/image.jpg" });
- * ```
- */
-export async function sendWecomGroup(
-  account: ResolvedWecomAppAccount,
-  chatId: string,
-  options: SendMessageOptions
-): Promise<SendResult> {
-  if (!account.canSendActive) {
-    return {
-      ok: false,
-      error: "Account not configured for active sending (missing corpId, corpSecret, or agentId)",
-    };
-  }
-
-  const normalizedTarget = normalizeTarget(chatId, "group");
   const target = parseTarget(normalizedTarget);
 
   return sendMessage(account, target, options);
@@ -234,18 +189,19 @@ async function sendMessage(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 通用发送函数（自动识别目标类型）
+// 通用发送函数（自动识别目标格式）
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * 发送消息（自动识别目标类型）
+ * 发送消息（自动识别目标格式）
  *
- * 根据 target 前缀自动判断是私聊还是群聊：
- * - "user:xxx" 或无前缀 → 私聊
- * - "group:xxx" → 群聊
+ * 支持多种 target 格式：
+ * - "user:xxx" → 私聊
+ * - "wecom-app:user:xxx" → 私聊（带 channel 前缀）
+ * - "xxx" → 私聊（裸 ID，默认当作用户）
  *
  * @param account - 已解析的账户配置
- * @param target - 目标（支持 "user:xxx"、"group:xxx"、"xxx" 格式）
+ * @param target - 目标（支持 "user:xxx"、"wecom-app:user:xxx"、"xxx" 格式）
  * @param options - 消息选项
  */
 export async function sendWecom(
@@ -267,7 +223,7 @@ export async function sendWecom(
     normalizedTarget = normalizedTarget.slice(channelPrefix.length);
   }
 
-  // 解析目标
+  // 解析目标（只支持 user:）
   const parsedTarget = parseTarget(normalizedTarget);
 
   return sendMessage(account, parsedTarget, options);

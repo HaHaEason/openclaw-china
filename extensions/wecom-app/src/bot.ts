@@ -7,7 +7,6 @@
 
 import {
   checkDmPolicy,
-  checkGroupPolicy,
   createLogger,
   type Logger,
 } from "@openclaw-china/shared";
@@ -16,9 +15,7 @@ import type { PluginRuntime } from "./runtime.js";
 import type { ResolvedWecomAppAccount, WecomAppInboundMessage, WecomAppDmPolicy } from "./types.js";
 import {
   resolveAllowFrom,
-  resolveGroupAllowFrom,
-  resolveGroupPolicy,
-  resolveRequireMention,
+  resolveDmPolicy,
   resolveInboundMediaEnabled,
   resolveInboundMediaMaxBytes,
   type PluginConfig,
@@ -281,14 +278,7 @@ function resolveSenderId(msg: WecomAppInboundMessage): string {
   return userid || "unknown";
 }
 
-function resolveChatType(msg: WecomAppInboundMessage): "direct" | "group" {
-  return msg.chattype === "group" ? "group" : "direct";
-}
-
-function resolveChatId(msg: WecomAppInboundMessage, senderId: string, chatType: "direct" | "group"): string {
-  if (chatType === "group") {
-    return msg.chatid?.trim() || "unknown";
-  }
+function resolveChatId(msg: WecomAppInboundMessage, senderId: string): string {
   return senderId;
 }
 
@@ -323,48 +313,24 @@ export async function dispatchWecomAppMessage(params: {
 
   const logger: Logger = createLogger("wecom-app", { log: params.log, error: params.error });
 
-  const chatType = resolveChatType(msg);
   const senderId = resolveSenderId(msg);
-  const chatId = resolveChatId(msg, senderId, chatType);
+  const chatId = resolveChatId(msg, senderId);
 
   const accountConfig = account?.config ?? {};
 
-  if (chatType === "group") {
-    const groupPolicy = resolveGroupPolicy(accountConfig);
-    const groupAllowFrom = resolveGroupAllowFrom(accountConfig);
-    const requireMention = resolveRequireMention(accountConfig);
+  // DM 策略检查
+  const dmPolicy = resolveDmPolicy(accountConfig);
+  const allowFrom = resolveAllowFrom(accountConfig);
 
-    const policyResult = checkGroupPolicy({
-      groupPolicy,
-      conversationId: chatId,
-      groupAllowFrom,
-      requireMention,
-      // TODO: 从消息中推导实际的提及状态；为了安全默认为 false
-      mentionedBot: false,
-    });
+  const policyResult = checkDmPolicy({
+    dmPolicy,
+    senderId,
+    allowFrom,
+  });
 
-    if (!policyResult.allowed) {
-      logger.debug(`policy rejected: ${policyResult.reason}`);
-      return;
-    }
-  } else {
-    const dmPolicyRaw: WecomAppDmPolicy = accountConfig.dmPolicy ?? "pairing";
-    if (dmPolicyRaw === "disabled") {
-      logger.debug("dmPolicy=disabled, skipping dispatch");
-      return;
-    }
-
-    const allowFrom = resolveAllowFrom(accountConfig);
-    const policyResult = checkDmPolicy({
-      dmPolicy: dmPolicyRaw,
-      senderId,
-      allowFrom,
-    });
-
-    if (!policyResult.allowed) {
-      logger.debug(`policy rejected: ${policyResult.reason}`);
-      return;
-    }
+  if (!policyResult.allowed) {
+    logger.debug(`policy rejected: ${policyResult.reason}`);
+    return;
   }
 
   const channel = core.channel;
@@ -376,11 +342,12 @@ export async function dispatchWecomAppMessage(params: {
   const route = channel.routing.resolveAgentRoute({
     cfg: safeCfg,
     channel: "wecom-app",
-    peer: { kind: chatType === "group" ? "group" : "dm", id: chatId },
+    accountId: account.accountId,
+    peer: { kind: "dm", id: chatId },
   });
 
   const { text: rawBody, cleanup } = await buildInboundBody({ cfg: safeCfg, account, msg });
-  const fromLabel = chatType === "group" ? `group:${chatId}` : `user:${senderId}`;
+  const fromLabel = `user:${senderId}`;
 
   const storePath = channel.session?.resolveStorePath?.(safeCfg.session?.store, {
     agentId: route.agentId,
@@ -409,16 +376,22 @@ export async function dispatchWecomAppMessage(params: {
 
   const msgid = msg.msgid ?? msg.MsgId ?? undefined;
 
+  // 构建标准化的目标标识，用于自动回复到当前会话
+  // - From: 带渠道前缀，用于标识来源渠道
+  // - To: 不带渠道前缀，只带类型前缀，用于回复时路由
+  const from = `wecom-app:user:${senderId}`;
+  const to = `user:${senderId}`;
+
   const ctxPayload = (channel.reply?.finalizeInboundContext
     ? channel.reply.finalizeInboundContext({
         Body: body,
         RawBody: rawBody,
         CommandBody: rawBody,
-        From: chatType === "group" ? `wecom-app:group:${chatId}` : `wecom-app:${senderId}`,
-        To: `wecom-app:${chatId}`,
+        From: from,
+        To: to,
         SessionKey: route.sessionKey,
-        AccountId: route.accountId,
-        ChatType: chatType,
+        AccountId: route.accountId ?? account.accountId,
+        ChatType: "direct",
         ConversationLabel: fromLabel,
         SenderName: senderId,
         SenderId: senderId,
@@ -426,17 +399,17 @@ export async function dispatchWecomAppMessage(params: {
         Surface: "wecom-app",
         MessageSid: msgid,
         OriginatingChannel: "wecom-app",
-        OriginatingTo: `wecom-app:${chatId}`,
+        OriginatingTo: to,
       })
     : {
         Body: body,
         RawBody: rawBody,
         CommandBody: rawBody,
-        From: chatType === "group" ? `wecom-app:group:${chatId}` : `wecom-app:${senderId}`,
-        To: `wecom-app:${chatId}`,
+        From: from,
+        To: to,
         SessionKey: route.sessionKey,
-        AccountId: route.accountId,
-        ChatType: chatType,
+        AccountId: route.accountId ?? account.accountId,
+        ChatType: "direct",
         ConversationLabel: fromLabel,
         SenderName: senderId,
         SenderId: senderId,
@@ -444,7 +417,7 @@ export async function dispatchWecomAppMessage(params: {
         Surface: "wecom-app",
         MessageSid: msgid,
         OriginatingChannel: "wecom-app",
-        OriginatingTo: `wecom-app:${chatId}`,
+        OriginatingTo: to,
       }) as {
     SessionKey?: string;
     [key: string]: unknown;

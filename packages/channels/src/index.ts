@@ -103,7 +103,6 @@ export type {
   ResolvedWecomAppAccount,
   WecomAppInboundMessage,
   WecomAppDmPolicy,
-  WecomAppGroupPolicy,
   WecomAppSendTarget,
   AccessTokenCacheEntry,
 } from "@openclaw-china/wecom-app";

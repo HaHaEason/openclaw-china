@@ -3,7 +3,7 @@
 ## 1) 回发入站图片（reply 当前消息）
 
 要素：
-- target：通常 `user:<name>`
+- target：推荐 `user:<userId>`（也可 `wecom-app:user:<userId>` 或裸 `<userId>`）
 - replyTo：当前消息 id
 - path：入站 saved 路径（inbound/YYYY-MM-DD/xxx）
 
@@ -18,6 +18,10 @@
 示例：
 - path: /root/.openclaw/media/wecom-app/inbound/2026-02-04/voice_xxx.amr
 
+补充：
+- `.wav/.mp3` 可能无法按 voice 发送。
+- 可配置 `voiceTranscode.enabled=true`（有 ffmpeg 时自动转 amr；否则降级为 file）。
+
 ## 3) README 以“文件形式”发送
 
 步骤：
@@ -27,7 +31,8 @@
 ## 4) 发送失败排障
 
 - requires a target：补 target
-- Unknown target：改用 user:<name> 或要求提供真实 id
+- Unknown target：改用 `user:<id>` / `wecom-app:user:<id>` / `<id>`；多账号可用 `user:<id>@<accountId>`
+- Account not configured for active sending：检查 `corpId/corpSecret/agentId`
 - ok=false：检查文件是否存在/大小限制/通道错误日志
 
 ## 5) OCR（MCP）
