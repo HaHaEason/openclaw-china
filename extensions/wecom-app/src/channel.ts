@@ -24,6 +24,52 @@ import { hasFfmpeg, transcodeToAmr } from "./ffmpeg.js";
  */
 type MediaType = "image" | "voice" | "file";
 
+type ParsedDirectTarget = {
+  accountId?: string;
+  userId: string;
+};
+
+function looksLikeEmail(raw: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw.trim());
+}
+
+/**
+ * 统一解析 wecom-app 直发目标（仅用户）
+ * 支持：
+ * - wecom-app:user:<userId>
+ * - user:<userId>
+ * - <userId>
+ * - 上述格式 + @accountId 后缀（email 场景不拆 account）
+ */
+function parseDirectTarget(rawTarget: string): ParsedDirectTarget | null {
+  let raw = String(rawTarget ?? "").trim();
+  if (!raw) return null;
+
+  if (raw.startsWith("wecom-app:")) {
+    raw = raw.slice("wecom-app:".length);
+  }
+
+  let accountId: string | undefined;
+  if (!looksLikeEmail(raw)) {
+    const atIdx = raw.lastIndexOf("@");
+    if (atIdx > 0 && atIdx < raw.length - 1) {
+      const candidate = raw.slice(atIdx + 1);
+      if (!/[:/]/.test(candidate)) {
+        accountId = candidate;
+        raw = raw.slice(0, atIdx);
+      }
+    }
+  }
+
+  if (raw.startsWith("group:")) return null;
+  if (raw.startsWith("user:")) raw = raw.slice(5);
+
+  const userId = raw.trim();
+  if (!userId) return null;
+
+  return { accountId, userId };
+}
+
 /**
  * 根据文件路径或 MIME 类型检测媒体类型
  */
@@ -241,7 +287,7 @@ export const wecomAppPlugin = {
         if (raw.startsWith(prefix)) return false;
       }
 
-      // 接受 user:/group: 前缀或裸 ID（裸 ID 会自动转换为 user:）
+      // 接受 user: 前缀或裸 ID（裸 ID 会自动转换为 user:）
       return true;
     },
 
@@ -264,49 +310,9 @@ export const wecomAppPlugin = {
       accountId?: string;
       to: string;
     } | null => {
-      // NOTE:
-      // The OpenClaw message routing layer may pass targets in different shapes:
-      // - "wecom-app:user:xxx" or "wecom-app:group:xxx" (fully-qualified with type)
-      // - "user:xxx" or "group:xxx" (type-prefixed, bare)
-      // - "xxx" (bare ID, auto-converted to user for Agent compatibility)
-      // - "xxx@accountId" (with account selector)
-      // We accept bare IDs and treat them as user IDs for Agent compatibility.
-
-      let raw = (params.target ?? "").trim();
-      if (!raw) return null;
-
-      // 1. 剥离 channel 前缀 "wecom-app:"
-      const channelPrefix = "wecom-app:";
-      if (raw.startsWith(channelPrefix)) {
-        raw = raw.slice(channelPrefix.length);
-      }
-
-      // 2. 解析 accountId（如果末尾包含 @accountId）
-      let accountId: string | undefined;
-      let to = raw;
-
-      // 只在末尾查找 @，避免误解析 email 格式
-      const atIdx = raw.lastIndexOf("@");
-      if (atIdx > 0 && atIdx < raw.length - 1) {
-        // 检查 @ 之后是否是有效的 accountId（不含 : 或 /）
-        const potentialAccountId = raw.slice(atIdx + 1);
-        if (!/[:/]/.test(potentialAccountId)) {
-          to = raw.slice(0, atIdx);
-          accountId = potentialAccountId;
-        }
-      }
-
-      // 3. 剥离 user: 或 group: 前缀，返回纯 ID
-      // 这样框架才能正确匹配 inbound context 中的 From/To 字段
-      if (to.startsWith("group:")) {
-        return { channel: "wecom-app", accountId, to: to.slice(6) };
-      }
-      if (to.startsWith("user:")) {
-        return { channel: "wecom-app", accountId, to: to.slice(5) };
-      }
-
-      // 4. 裸 ID 格式（直接返回，默认当作用户 ID）
-      return { channel: "wecom-app", accountId, to };
+      const parsed = parseDirectTarget(params.target);
+      if (!parsed) return null;
+      return { channel: "wecom-app", accountId: parsed.accountId, to: parsed.userId };
     },
 
     /**
@@ -386,22 +392,16 @@ export const wecomAppPlugin = {
         };
       }
 
-      // 解析 to: 支持格式 "wecom-app:user:xxx" / "wecom-app:xxx" / "user:xxx" / "xxx"
-      let to = params.to;
-
-      // 1. 先剥离 channel 前缀 "wecom-app:"
-      const channelPrefix = "wecom-app:";
-      if (to.startsWith(channelPrefix)) {
-        to = to.slice(channelPrefix.length);
+      const parsed = parseDirectTarget(params.to);
+      if (!parsed) {
+        return {
+          channel: "wecom-app",
+          ok: false,
+          messageId: "",
+          error: new Error(`Unsupported target for WeCom App: ${params.to}`),
+        };
       }
-
-      // 2. 解析剩余部分: "user:xxx" / "xxx"
-      let target: { userId: string };
-      if (to.startsWith("user:")) {
-        target = { userId: to.slice(5) };
-      } else {
-        target = { userId: to };
-      }
+      const target: { userId: string } = { userId: parsed.userId };
 
       try {
         const result = await sendWecomAppMessage(account, target, params.text);
@@ -458,22 +458,16 @@ export const wecomAppPlugin = {
         };
       }
 
-      // 解析 to: 支持格式 "wecom-app:user:xxx" / "wecom-app:xxx" / "user:xxx" / "xxx"
-      let to = params.to;
-
-      //1. 先剥离 channel 前缀 "wecom-app:"
-      const channelPrefix = "wecom-app:";
-      if (to.startsWith(channelPrefix)) {
-        to = to.slice(channelPrefix.length);
+      const parsed = parseDirectTarget(params.to);
+      if (!parsed) {
+        return {
+          channel: "wecom-app",
+          ok: false,
+          messageId: "",
+          error: new Error(`Unsupported target for WeCom App: ${params.to}`),
+        };
       }
-
-      //2. 解析剩余部分: "user:xxx" / "xxx"
-      let target: { userId: string };
-      if (to.startsWith("user:")) {
-        target = { userId: to.slice(5) };
-      } else {
-        target = { userId: to };
-      }
+      const target: { userId: string } = { userId: parsed.userId };
 
       console.log(`[wecom-app] Target parsed:`, target);
 
