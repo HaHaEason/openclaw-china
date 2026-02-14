@@ -7,6 +7,7 @@
 
 import {
   ASRError,
+  appendCronHiddenPrompt,
   checkDmPolicy,
   createLogger,
   transcribeTencentFlash,
@@ -566,11 +567,46 @@ export async function dispatchWecomAppMessage(params: {
     [key: string]: unknown;
   };
 
+  let cronBase = "";
+  if (typeof ctxPayload.RawBody === "string" && ctxPayload.RawBody) {
+    cronBase = ctxPayload.RawBody;
+  } else if (typeof ctxPayload.Body === "string" && ctxPayload.Body) {
+    cronBase = ctxPayload.Body;
+  } else if (typeof ctxPayload.CommandBody === "string" && ctxPayload.CommandBody) {
+    cronBase = ctxPayload.CommandBody;
+  }
+
+  if (cronBase) {
+    const nextCron = appendCronHiddenPrompt(cronBase);
+    if (nextCron !== cronBase) {
+      // 仅覆盖送给 LLM 的内容，避免污染原始上下文字段
+      ctxPayload.BodyForAgent = nextCron;
+    }
+  }
+
   if (channel.session?.recordInboundSession && storePath) {
+    const mainSessionKeyRaw = (route as Record<string, unknown>)?.mainSessionKey;
+    const mainSessionKey =
+      typeof mainSessionKeyRaw === "string" && mainSessionKeyRaw.trim()
+        ? mainSessionKeyRaw
+        : undefined;
+    const updateLastRoute = {
+      sessionKey: mainSessionKey ?? route.sessionKey,
+      channel: "wecom-app",
+      to: (ctxPayload.OriginatingTo ?? ctxPayload.To ?? `user:${senderId}`) as string,
+      accountId: route.accountId ?? account.accountId,
+    };
+    const recordSessionKeyRaw = ctxPayload.SessionKey ?? route.sessionKey;
+    const recordSessionKey =
+      typeof recordSessionKeyRaw === "string" && recordSessionKeyRaw.trim()
+        ? recordSessionKeyRaw
+        : route.sessionKey;
+
     await channel.session.recordInboundSession({
       storePath,
-      sessionKey: ctxPayload.SessionKey ?? route.sessionKey,
+      sessionKey: recordSessionKey,
       ctx: ctxPayload,
+      updateLastRoute,
       onRecordError: (err: unknown) => {
         logger.error(`wecom-app: failed updating session meta: ${String(err)}`);
       },

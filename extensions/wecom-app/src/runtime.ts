@@ -53,6 +53,13 @@ export interface PluginRuntime {
         storePath: string;
         sessionKey: string;
         ctx: unknown;
+        updateLastRoute?: {
+          sessionKey: string;
+          channel: string;
+          to: string;
+          accountId?: string;
+          threadId?: string | number;
+        };
         onRecordError?: (err: unknown) => void;
       }) => Promise<void>;
     };
