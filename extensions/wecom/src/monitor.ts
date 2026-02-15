@@ -53,10 +53,12 @@ const activeStreamIdsByTo = new Map<string, Set<string>>();
 const streamRouteBindings = new Map<string, StreamRouteBinding>();
 const streamBySessionKey = new Map<string, string>();
 const streamByRunId = new Map<string, string>();
+const streamFinalizeTimers = new Map<string, NodeJS.Timeout>();
 
 const STREAM_TTL_MS = 10 * 60 * 1000;
 const STREAM_MAX_BYTES = 20_480;
 const INITIAL_STREAM_WAIT_MS = 800;
+const STREAM_FINISH_GRACE_MS = 2_500;
 
 function normalizeWebhookPath(raw: string): string {
   const trimmed = raw.trim();
@@ -98,6 +100,11 @@ function pruneStreams(): void {
   const cutoff = Date.now() - STREAM_TTL_MS;
   for (const [id, state] of streams.entries()) {
     if (state.updatedAt < cutoff) {
+      const timer = streamFinalizeTimers.get(id);
+      if (timer) {
+        clearTimeout(timer);
+        streamFinalizeTimers.delete(id);
+      }
       streams.delete(id);
       unbindActiveStream(id);
     }
@@ -107,6 +114,30 @@ function pruneStreams(): void {
       msgidToStreamId.delete(msgid);
     }
   }
+}
+
+function finalizeStreamNow(streamId: string): void {
+  const timer = streamFinalizeTimers.get(streamId);
+  if (timer) {
+    clearTimeout(timer);
+    streamFinalizeTimers.delete(streamId);
+  }
+  const state = streams.get(streamId);
+  if (!state) return;
+  state.finished = true;
+  state.updatedAt = Date.now();
+  unbindActiveStream(streamId);
+}
+
+function scheduleStreamFinalize(streamId: string): void {
+  const existing = streamFinalizeTimers.get(streamId);
+  if (existing) {
+    clearTimeout(existing);
+  }
+  const timer = setTimeout(() => {
+    finalizeStreamNow(streamId);
+  }, STREAM_FINISH_GRACE_MS);
+  streamFinalizeTimers.set(streamId, timer);
 }
 
 function truncateUtf8Bytes(text: string, maxBytes: number): string {
@@ -204,15 +235,18 @@ function buildStreamPlaceholderReply(streamId: string): { msgtype: "stream"; str
   };
 }
 
-function buildStreamReplyFromState(state: StreamState): { msgtype: "stream"; stream: { id: string; finish: boolean; content: string } } {
+function buildStreamReplyFromState(state: StreamState): { msgtype: "stream"; stream: { id: string; finish: boolean; content?: string } } {
   const content = truncateUtf8Bytes(state.content, STREAM_MAX_BYTES);
+  const stream: { id: string; finish: boolean; content?: string } = {
+    id: state.streamId,
+    finish: state.finished,
+  };
+  if (content.trim()) {
+    stream.content = content;
+  }
   return {
     msgtype: "stream",
-    stream: {
-      id: state.streamId,
-      finish: state.finished,
-      content,
-    },
+    stream,
   };
 }
 
@@ -247,6 +281,10 @@ function appendStreamContent(state: StreamState, nextText: string): void {
   const content = state.content ? `${state.content}\n\n${nextText}`.trim() : nextText.trim();
   state.content = truncateUtf8Bytes(content, STREAM_MAX_BYTES);
   state.updatedAt = Date.now();
+  // If stream finalization is pending, extend grace window for trailing chunks.
+  if (streamFinalizeTimers.has(state.streamId)) {
+    scheduleStreamFinalize(state.streamId);
+  }
 }
 
 function bindActiveStream(params: { streamId: string; accountId: string; to: string }): void {
@@ -280,6 +318,11 @@ function bindStreamRouteContext(params: { streamId: string; sessionKey?: string;
 }
 
 function unbindActiveStream(streamId: string): void {
+  const timer = streamFinalizeTimers.get(streamId);
+  if (timer) {
+    clearTimeout(timer);
+    streamFinalizeTimers.delete(streamId);
+  }
   const binding = streamBindings.get(streamId);
   if (binding) {
     const key = normalizeAccountTargetKey(binding.accountId, binding.to);
@@ -640,9 +683,10 @@ export async function handleWecomWebhookRequest(req: IncomingMessage, res: Serve
         current.error = err instanceof Error ? err.message : String(err);
         current.content = current.content || `Error: ${current.error}`;
       }
-      current.finished = true;
       current.updatedAt = Date.now();
-      unbindActiveStream(streamId);
+      // Leave a short grace window so trailing message-tool sends can still
+      // append into this stream before we emit final finish=true snapshots.
+      scheduleStreamFinalize(streamId);
     };
 
     const hooks = {
@@ -694,10 +738,9 @@ export async function handleWecomWebhookRequest(req: IncomingMessage, res: Serve
   } else {
     const state = streams.get(streamId);
     if (state) {
-      state.finished = true;
       state.updatedAt = Date.now();
     }
-    unbindActiveStream(streamId);
+    scheduleStreamFinalize(streamId);
   }
 
   await waitForStreamContent(streamId, INITIAL_STREAM_WAIT_MS);
