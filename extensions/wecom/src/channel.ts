@@ -370,7 +370,6 @@ export const wecomPlugin = {
       accountId?: string;
       to: string;
       text: string;
-      options?: { markdown?: boolean };
       sessionKey?: string;
       runId?: string;
     }): Promise<{
@@ -608,10 +607,17 @@ export const wecomPlugin = {
         const candidate = ctx.runtime as {
           channel?: {
             routing?: { resolveAgentRoute?: unknown };
-            reply?: { dispatchReplyFromConfig?: unknown };
+            reply?: {
+              dispatchReplyFromConfig?: unknown;
+              dispatchReplyWithBufferedBlockDispatcher?: unknown;
+            };
           };
         };
-        if (candidate.channel?.routing?.resolveAgentRoute && candidate.channel?.reply?.dispatchReplyFromConfig) {
+        const hasRouting = Boolean(candidate.channel?.routing?.resolveAgentRoute);
+        const hasReply =
+          Boolean(candidate.channel?.reply?.dispatchReplyWithBufferedBlockDispatcher) ||
+          Boolean(candidate.channel?.reply?.dispatchReplyFromConfig);
+        if (hasRouting && hasReply) {
           setWecomRuntime(ctx.runtime as Record<string, unknown>);
         }
       }

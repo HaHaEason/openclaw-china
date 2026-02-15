@@ -16,7 +16,6 @@ import {
 import type { PluginRuntime } from "./runtime.js";
 import type { ResolvedWecomAccount, WecomInboundMessage, WecomDmPolicy } from "./types.js";
 import { decryptWecomMedia } from "./crypto.js";
-import * as os from "os";
 import * as path from "path";
 import * as fsPromises from "fs/promises";
 import * as fs from "fs";
@@ -237,52 +236,6 @@ function resolveMentionedBot(msg: WecomInboundMessage): boolean {
   }
 
   return false;
-}
-
-function buildInboundBody(msg: WecomInboundMessage): string {
-  const msgtype = String(msg.msgtype ?? "").toLowerCase();
-  if (msgtype === "text") {
-    const content = (msg as { text?: { content?: string } }).text?.content;
-    return typeof content === "string" ? content : "";
-  }
-  if (msgtype === "voice") {
-    const content = (msg as { voice?: { content?: string } }).voice?.content;
-    return typeof content === "string" ? content : "[voice]";
-  }
-  if (msgtype === "mixed") {
-    const items = (msg as { mixed?: { msg_item?: unknown } }).mixed?.msg_item;
-    if (Array.isArray(items)) {
-      return items
-        .map((item: unknown) => {
-          if (!item || typeof item !== "object") return "";
-          const typed = item as { msgtype?: string; text?: { content?: string }; image?: { url?: string } };
-          const t = String(typed.msgtype ?? "").toLowerCase();
-          if (t === "text") return String(typed.text?.content ?? "");
-          if (t === "image") return `[image] ${String(typed.image?.url ?? "").trim()}`.trim();
-          return t ? `[${t}]` : "";
-        })
-        .filter((part) => Boolean(part && part.trim()))
-        .join("\n");
-    }
-    return "[mixed]";
-  }
-  if (msgtype === "image") {
-    const url = String((msg as { image?: { url?: string } }).image?.url ?? "").trim();
-    return url ? `[image] ${url}` : "[image]";
-  }
-  if (msgtype === "file") {
-    const url = String((msg as { file?: { url?: string } }).file?.url ?? "").trim();
-    return url ? `[file] ${url}` : "[file]";
-  }
-  if (msgtype === "event") {
-    const eventtype = String((msg as { event?: { eventtype?: string } }).event?.eventtype ?? "").trim();
-    return eventtype ? `[event] ${eventtype}` : "[event]";
-  }
-  if (msgtype === "stream") {
-    const id = String((msg as { stream?: { id?: string } }).stream?.id ?? "").trim();
-    return id ? `[stream_refresh] ${id}` : "[stream_refresh]";
-  }
-  return msgtype ? `[${msgtype}]` : "";
 }
 
 export async function dispatchWecomMessage(params: {
@@ -548,11 +501,6 @@ export async function dispatchWecomMessage(params: {
 // ============================================================================
 // 媒体文件处理
 // ============================================================================
-
-/**
- * HTTP 请求超时时间（毫秒）
- */
-const HTTP_REQUEST_TIMEOUT = 30000;
 
 /**
  * 媒体下载超时时间（毫秒）
