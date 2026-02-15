@@ -244,13 +244,16 @@ export async function dispatchWecomMessage(params: {
         })
       : rawBody;
 
+    const from = chatType === "group" ? `wecom:group:${chatId}` : `wecom:user:${senderId}`;
+    const to = chatType === "group" ? `group:${chatId}` : `user:${senderId}`;
+
     const ctxPayload = (channel.reply?.finalizeInboundContext
       ? channel.reply.finalizeInboundContext({
           Body: body,
           RawBody: rawBody,
           CommandBody: rawBody,
-          From: chatType === "group" ? `wecom:group:${chatId}` : `wecom:${senderId}`,
-          To: `wecom:${chatId}`,
+          From: from,
+          To: to,
           SessionKey: route.sessionKey,
           AccountId: route.accountId,
           ChatType: chatType,
@@ -261,14 +264,14 @@ export async function dispatchWecomMessage(params: {
           Surface: "wecom",
           MessageSid: msg.msgid,
           OriginatingChannel: "wecom",
-          OriginatingTo: `wecom:${chatId}`,
+          OriginatingTo: to,
         })
       : {
           Body: body,
           RawBody: rawBody,
           CommandBody: rawBody,
-          From: chatType === "group" ? `wecom:group:${chatId}` : `wecom:${senderId}`,
-          To: `wecom:${chatId}`,
+          From: from,
+          To: to,
           SessionKey: route.sessionKey,
           AccountId: route.accountId,
           ChatType: chatType,
@@ -279,21 +282,53 @@ export async function dispatchWecomMessage(params: {
           Surface: "wecom",
           MessageSid: msg.msgid,
           OriginatingChannel: "wecom",
-          OriginatingTo: `wecom:${chatId}`,
+          OriginatingTo: to,
         }) as {
       SessionKey?: string;
       [key: string]: unknown;
     };
+
+    // 兜底当前会话目标，确保 message 工具在未显式指定 target 时可回到当前会话。
+    const ctxTo =
+      typeof ctxPayload.To === "string" && ctxPayload.To.trim()
+        ? ctxPayload.To.trim()
+        : undefined;
+    const ctxOriginatingTo =
+      typeof ctxPayload.OriginatingTo === "string" && ctxPayload.OriginatingTo.trim()
+        ? ctxPayload.OriginatingTo.trim()
+        : undefined;
+    const stableTo = ctxOriginatingTo ?? ctxTo ?? to;
+    ctxPayload.To = stableTo;
+    ctxPayload.OriginatingTo = stableTo;
+    ctxPayload.SenderId = senderId;
+    ctxPayload.SenderName = senderId;
+    ctxPayload.ConversationLabel = fromLabel;
 
     // DM/group policy already passed above, so commands are eligible for this sender.
     // Without this flag, OpenClaw finalizer defaults CommandAuthorized to false.
     ctxPayload.CommandAuthorized = true;
 
     if (channel.session?.recordInboundSession && storePath) {
+      const mainSessionKeyRaw = (route as Record<string, unknown>)?.mainSessionKey;
+      const mainSessionKey =
+        typeof mainSessionKeyRaw === "string" && mainSessionKeyRaw.trim()
+          ? mainSessionKeyRaw
+          : undefined;
+      const recordSessionKeyRaw = ctxPayload.SessionKey ?? route.sessionKey;
+      const recordSessionKey =
+        typeof recordSessionKeyRaw === "string" && recordSessionKeyRaw.trim()
+          ? recordSessionKeyRaw
+          : route.sessionKey;
       await channel.session.recordInboundSession({
         storePath,
-        sessionKey: ctxPayload.SessionKey ?? route.sessionKey,
+        sessionKey: recordSessionKey,
         ctx: ctxPayload,
+        updateLastRoute: {
+          sessionKey: mainSessionKey ?? route.sessionKey,
+          channel: "wecom",
+          to: stableTo,
+          accountId: route.accountId ?? account.accountId,
+        },
         onRecordError: (err: unknown) => {
           logger.error(`wecom: failed updating session meta: ${String(err)}`);
         },

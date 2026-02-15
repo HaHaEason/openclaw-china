@@ -17,6 +17,60 @@ import {
 import { registerWecomWebhookTarget } from "./monitor.js";
 import { setWecomRuntime } from "./runtime.js";
 
+type ParsedDirectTarget = {
+  accountId?: string;
+  kind: "user" | "group";
+  id: string;
+};
+
+// 裸目标默认按 userId 处理；仅接受“机器可投递 ID”风格，避免显示名歧义。
+const BARE_USER_ID_RE = /^[a-z0-9][a-z0-9._@-]{0,63}$/;
+const EXPLICIT_USER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$/;
+const GROUP_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$/;
+
+function looksLikeEmail(raw: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw.trim());
+}
+
+function parseDirectTarget(rawTarget: string): ParsedDirectTarget | null {
+  let raw = String(rawTarget ?? "").trim();
+  if (!raw) return null;
+
+  if (raw.startsWith("wecom:")) {
+    raw = raw.slice("wecom:".length);
+  }
+
+  let accountId: string | undefined;
+  if (!looksLikeEmail(raw)) {
+    const atIdx = raw.lastIndexOf("@");
+    if (atIdx > 0 && atIdx < raw.length - 1) {
+      const candidate = raw.slice(atIdx + 1);
+      if (!/[:/]/.test(candidate)) {
+        accountId = candidate;
+        raw = raw.slice(0, atIdx);
+      }
+    }
+  }
+
+  if (raw.startsWith("chat:")) {
+    raw = `group:${raw.slice(5)}`;
+  }
+
+  if (raw.startsWith("group:")) {
+    const id = raw.slice(6).trim();
+    if (!id || /\s/.test(id) || !GROUP_ID_RE.test(id)) return null;
+    return { accountId, kind: "group", id };
+  }
+
+  const explicitUserPrefix = raw.startsWith("user:");
+  if (explicitUserPrefix) raw = raw.slice(5);
+  const id = raw.trim();
+  if (!id || /\s/.test(id)) return null;
+  if (!explicitUserPrefix && !BARE_USER_ID_RE.test(id)) return null;
+  if (explicitUserPrefix && !EXPLICIT_USER_ID_RE.test(id)) return null;
+  return { accountId, kind: "user", id };
+}
+
 const meta = {
   id: "wecom",
   label: "WeCom",
@@ -45,6 +99,26 @@ export const wecomPlugin = {
     edit: false,
     reply: true,
     polls: false,
+  },
+
+  messaging: {
+    normalizeTarget: (raw: string): string | undefined => {
+      const parsed = parseDirectTarget(raw);
+      if (!parsed) return undefined;
+      return `${parsed.kind}:${parsed.id}${parsed.accountId ? `@${parsed.accountId}` : ""}`;
+    },
+    targetResolver: {
+      looksLikeId: (raw: string, normalized?: string) => {
+        const candidate = (normalized ?? raw).trim();
+        return Boolean(parseDirectTarget(candidate));
+      },
+      hint: "Use WeCom ids only: user:<userid> for DM, group:<chatid> for groups (optional @accountId).",
+    },
+    formatTargetDisplay: (params: { target: string; display?: string }) => {
+      const parsed = parseDirectTarget(params.target);
+      if (!parsed) return params.display?.trim() || params.target;
+      return `${parsed.kind}:${parsed.id}`;
+    },
   },
 
   configSchema: WecomConfigJsonSchema,
@@ -149,6 +223,47 @@ export const wecomPlugin = {
       const account = params.account ?? resolveWecomAccount({ cfg: params.cfg ?? {}, accountId: params.accountId });
       return resolveRequireMention(account.config);
     },
+  },
+
+  directory: {
+    canResolve: (params: { target: string }): boolean => Boolean(parseDirectTarget(params.target)),
+    resolveTarget: (params: {
+      cfg: PluginConfig;
+      target: string;
+    }): {
+      channel: string;
+      accountId?: string;
+      to: string;
+    } | null => {
+      const parsed = parseDirectTarget(params.target);
+      if (!parsed) return null;
+      return { channel: "wecom", accountId: parsed.accountId, to: parsed.id };
+    },
+    resolveTargets: (params: {
+      cfg: PluginConfig;
+      targets: string[];
+    }): Array<{
+      channel: string;
+      accountId?: string;
+      to: string;
+    }> => {
+      const results: Array<{
+        channel: string;
+        accountId?: string;
+        to: string;
+      }> = [];
+      for (const target of params.targets) {
+        const resolved = wecomPlugin.directory.resolveTarget({ cfg: params.cfg, target });
+        if (resolved) results.push(resolved);
+      }
+      return results;
+    },
+    getTargetFormats: (): string[] => [
+      "wecom:user:<userId>",
+      "user:<userId>",
+      "group:<chatId>",
+      "<userid-lowercase>",
+    ],
   },
 
   outbound: {
