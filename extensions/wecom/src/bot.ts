@@ -25,6 +25,7 @@ import {
   resolveRequireMention,
   type PluginConfig,
 } from "./config.js";
+import { registerResponseUrl } from "./outbound-reply.js";
 
 export type WecomDispatchHooks = {
   onChunk: (text: string) => void;
@@ -156,6 +157,16 @@ export async function dispatchWecomMessage(params: {
   const chatType = resolveChatType(msg);
   const senderId = resolveSenderId(msg);
   const chatId = resolveChatId(msg, senderId, chatType);
+  const to = chatType === "group" ? `group:${chatId}` : `user:${senderId}`;
+
+  const responseUrl = typeof msg.response_url === "string" ? msg.response_url.trim() : "";
+  if (responseUrl) {
+    registerResponseUrl({
+      accountId: account.accountId,
+      to,
+      responseUrl,
+    });
+  }
 
   const accountConfig = account?.config ?? {};
 
@@ -245,7 +256,6 @@ export async function dispatchWecomMessage(params: {
       : rawBody;
 
     const from = chatType === "group" ? `wecom:group:${chatId}` : `wecom:user:${senderId}`;
-    const to = chatType === "group" ? `group:${chatId}` : `user:${senderId}`;
 
     const ctxPayload = (channel.reply?.finalizeInboundContext
       ? channel.reply.finalizeInboundContext({

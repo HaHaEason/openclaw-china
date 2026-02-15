@@ -8,6 +8,7 @@ import type { PluginConfig } from "./config.js";
 import { decryptWecomEncrypted, encryptWecomPlaintext, verifyWecomSignature, computeWecomMsgSignature } from "./crypto.js";
 import { dispatchWecomMessage } from "./bot.js";
 import { tryGetWecomRuntime } from "./runtime.js";
+import { handleTempMediaRequest, rememberAccountPublicBaseUrl } from "./outbound-reply.js";
 
 export type WecomRuntimeEnv = {
   log?: (message: string) => void;
@@ -226,6 +227,10 @@ export function registerWecomWebhookTarget(target: WecomWebhookTarget): () => vo
 export async function handleWecomWebhookRequest(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
   pruneStreams();
 
+  if (await handleTempMediaRequest(req, res)) {
+    return true;
+  }
+
   const path = resolvePath(req);
   const targets = webhookTargets.get(path);
   if (!targets || targets.length === 0) return false;
@@ -270,6 +275,7 @@ export async function handleWecomWebhookRequest(req: IncomingMessage, res: Serve
         receiveId: target.account.receiveId,
         encrypt: echostr,
       });
+      rememberAccountPublicBaseUrl(target.account.accountId, req);
       res.statusCode = 200;
       res.setHeader("Content-Type", "text/plain; charset=utf-8");
       res.end(plain);
@@ -326,6 +332,7 @@ export async function handleWecomWebhookRequest(req: IncomingMessage, res: Serve
     res.end("unauthorized");
     return true;
   }
+  rememberAccountPublicBaseUrl(target.account.accountId, req);
 
   if (!target.account.configured || !target.account.token || !target.account.encodingAESKey) {
     res.statusCode = 500;

@@ -2,6 +2,9 @@
  * 企业微信 ChannelPlugin 实现
  */
 
+import path from "node:path";
+import { access } from "node:fs/promises";
+
 import type { ResolvedWecomAccount, WecomConfig } from "./types.js";
 import {
   DEFAULT_ACCOUNT_ID,
@@ -16,6 +19,12 @@ import {
 } from "./config.js";
 import { registerWecomWebhookTarget } from "./monitor.js";
 import { setWecomRuntime } from "./runtime.js";
+import {
+  buildTempMediaUrl,
+  consumeResponseUrl,
+  getAccountPublicBaseUrl,
+  registerTempLocalMedia,
+} from "./outbound-reply.js";
 
 type ParsedDirectTarget = {
   accountId?: string;
@@ -69,6 +78,57 @@ function parseDirectTarget(rawTarget: string): ParsedDirectTarget | null {
   if (!explicitUserPrefix && !BARE_USER_ID_RE.test(id)) return null;
   if (explicitUserPrefix && !EXPLICIT_USER_ID_RE.test(id)) return null;
   return { accountId, kind: "user", id };
+}
+
+type OutboundMediaType = "image" | "file";
+
+function isHttpUrl(value: string): boolean {
+  return /^https?:\/\//i.test(value.trim());
+}
+
+function normalizeLocalPath(raw: string): string {
+  const trimmed = raw.trim();
+  if (trimmed.startsWith("file://")) {
+    return decodeURIComponent(trimmed.slice("file://".length));
+  }
+  return trimmed;
+}
+
+async function ensureReadableFile(filePath: string): Promise<void> {
+  await access(filePath);
+}
+
+function detectOutboundMediaType(mediaUrl: string, mimeType?: string): OutboundMediaType {
+  const mime = String(mimeType ?? "")
+    .split(";")[0]
+    .trim()
+    .toLowerCase();
+  if (mime.startsWith("image/")) return "image";
+
+  const ext = path.extname(mediaUrl.split("?")[0] ?? "").toLowerCase();
+  if ([".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"].includes(ext)) {
+    return "image";
+  }
+  return "file";
+}
+
+function resolveReplyTargetToken(parsed: ParsedDirectTarget): string {
+  return `${parsed.kind}:${parsed.id}`;
+}
+
+async function postWecomResponse(responseUrl: string, payload: unknown): Promise<void> {
+  const body = JSON.stringify(payload);
+  const response = await fetch(responseUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body,
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`WeCom response_url send failed: HTTP ${response.status} ${text}`.trim());
+  }
 }
 
 const meta = {
@@ -268,13 +328,161 @@ export const wecomPlugin = {
 
   outbound: {
     deliveryMode: "direct",
-    sendText: async () => {
-      return {
-        channel: "wecom",
-        ok: false,
-        messageId: "",
-        error: new Error("WeCom intelligent bot only supports replying within callbacks (no standalone sendText)."),
-      };
+
+    sendText: async (params: {
+      cfg: PluginConfig;
+      accountId?: string;
+      to: string;
+      text: string;
+      options?: { markdown?: boolean };
+    }): Promise<{
+      channel: string;
+      ok: boolean;
+      messageId: string;
+      error?: Error;
+    }> => {
+      const account = resolveWecomAccount({ cfg: params.cfg, accountId: params.accountId });
+      const parsed = parseDirectTarget(params.to);
+      if (!parsed) {
+        return {
+          channel: "wecom",
+          ok: false,
+          messageId: "",
+          error: new Error(`Unsupported target for WeCom: ${params.to}`),
+        };
+      }
+      const responseUrl = consumeResponseUrl({
+        accountId: account.accountId,
+        to: resolveReplyTargetToken(parsed),
+      });
+      if (!responseUrl) {
+        return {
+          channel: "wecom",
+          ok: false,
+          messageId: "",
+          error: new Error(
+            `No response_url available for ${resolveReplyTargetToken(parsed)}. WeCom smart bot can only reply after inbound messages.`
+          ),
+        };
+      }
+      try {
+        await postWecomResponse(responseUrl, {
+          msgtype: "text",
+          text: {
+            content: params.text,
+          },
+        });
+        return {
+          channel: "wecom",
+          ok: true,
+          messageId: `response:${Date.now()}`,
+        };
+      } catch (err) {
+        return {
+          channel: "wecom",
+          ok: false,
+          messageId: "",
+          error: err instanceof Error ? err : new Error(String(err)),
+        };
+      }
+    },
+
+    sendMedia: async (params: {
+      cfg: PluginConfig;
+      accountId?: string;
+      to: string;
+      mediaUrl: string;
+      text?: string;
+      mimeType?: string;
+    }): Promise<{
+      channel: string;
+      ok: boolean;
+      messageId: string;
+      error?: Error;
+    }> => {
+      const account = resolveWecomAccount({ cfg: params.cfg, accountId: params.accountId });
+      const parsed = parseDirectTarget(params.to);
+      if (!parsed) {
+        return {
+          channel: "wecom",
+          ok: false,
+          messageId: "",
+          error: new Error(`Unsupported target for WeCom: ${params.to}`),
+        };
+      }
+      const responseUrl = consumeResponseUrl({
+        accountId: account.accountId,
+        to: resolveReplyTargetToken(parsed),
+      });
+      if (!responseUrl) {
+        return {
+          channel: "wecom",
+          ok: false,
+          messageId: "",
+          error: new Error(
+            `No response_url available for ${resolveReplyTargetToken(parsed)}. WeCom smart bot can only reply after inbound messages.`
+          ),
+        };
+      }
+
+      try {
+        let publicMediaUrl = params.mediaUrl.trim();
+        if (!isHttpUrl(publicMediaUrl)) {
+          const localPath = normalizeLocalPath(publicMediaUrl);
+          await ensureReadableFile(localPath);
+          const baseUrl = getAccountPublicBaseUrl(account.accountId);
+          if (!baseUrl) {
+            throw new Error(
+              "No public base URL captured yet for this account. Send one inbound message first, then retry media reply."
+            );
+          }
+          const temp = await registerTempLocalMedia({
+            filePath: localPath,
+            fileName: path.basename(localPath),
+          });
+          publicMediaUrl = buildTempMediaUrl({
+            baseUrl,
+            id: temp.id,
+            token: temp.token,
+            fileName: temp.fileName,
+          });
+        }
+
+        const mediaType = detectOutboundMediaType(publicMediaUrl, params.mimeType);
+        if (params.text?.trim()) {
+          console.warn(
+            "[wecom] sendMedia received caption text, but response_url is single-use; sending media only."
+          );
+        }
+        const payload =
+          mediaType === "image"
+            ? {
+                msgtype: "image",
+                image: {
+                  url: publicMediaUrl,
+                },
+              }
+            : {
+                msgtype: "file",
+                file: {
+                  url: publicMediaUrl,
+                },
+              };
+
+        await postWecomResponse(responseUrl, payload);
+        return {
+          channel: "wecom",
+          ok: true,
+          messageId: `response:${Date.now()}`,
+        };
+      } catch (err) {
+        return {
+          channel: "wecom",
+          ok: false,
+          messageId: "",
+          error: err instanceof Error ? err : new Error(String(err)),
+        };
+      }
     },
   },
 
