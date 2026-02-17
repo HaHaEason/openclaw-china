@@ -563,9 +563,12 @@ export async function downloadWecomMediaToFile(
 export async function sendWecomAppMessage(
   account: ResolvedWecomAppAccount,
   target: WecomAppSendTarget,
-  message: string
+  message: string,
+  logger?: Logger
 ): Promise<SendMessageResult> {
+  const log = resolveApiLogger(logger);
   if (!account.canSendActive) {
+    log.error("sendWecomAppMessage skipped: account not configured for active sending");
     return {
       ok: false,
       errcode: -1,
@@ -573,6 +576,7 @@ export async function sendWecomAppMessage(
     };
   }
 
+  log.info(`[wecom-app] Sending text message to target: ${JSON.stringify(target)}`);
   const token = await getAccessToken(account);
   const text = stripMarkdown(message);
 
@@ -597,6 +601,7 @@ export async function sendWecomAppMessage(
 
   const data = (await resp.json()) as SendMessageResult & { errcode?: number };
 
+  log.info(`[wecom-app] Text message sent, ok: ${data.errcode === 0}, msgid: ${data.msgid}, errcode: ${data.errcode}, errmsg: ${data.errmsg}`);
   return {
     ok: data.errcode === 0,
     errcode: data.errcode,
