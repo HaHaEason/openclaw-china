@@ -9,12 +9,19 @@ import {
   resolveInboundMediaKeepDays,
   resolveApiBaseUrl,
 } from "./config.js";
+import { createLogger, type Logger } from "@openclaw-china/shared";
 import { mkdir, writeFile, unlink, rename, readdir, stat } from "node:fs/promises";
 import { basename, join, extname } from "node:path";
 import { tmpdir } from "node:os";
 
 /** 下载超时时间（毫秒） */
 const DOWNLOAD_TIMEOUT = 120_000;
+
+const defaultLogger = createLogger("wecom-app");
+
+function resolveApiLogger(logger?: Logger): Logger {
+  return logger ?? defaultLogger;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 入站媒体：产品级存储策略
@@ -683,11 +690,15 @@ function getMimeType(filename: string, contentType?: string): string {
  * @param imageUrl 图片 URL 或本地文件路径
  * @returns 图片 Buffer
  */
-export async function downloadImage(imageUrl: string): Promise<{ buffer: Buffer; contentType?: string }> {
+export async function downloadImage(
+  imageUrl: string,
+  logger?: Logger
+): Promise<{ buffer: Buffer; contentType?: string }> {
+  const log = resolveApiLogger(logger);
   // 判断是网络 URL 还是本地路径
   if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
     // 网络下载
-    console.log(`[wecom-app] 使用 HTTP fetch 下载: ${imageUrl}`);
+    log.info(`[wecom-app] 使用 HTTP fetch 下载: ${imageUrl}`);
     const resp = await fetch(imageUrl);
     if (!resp.ok) {
       throw new Error(`Download image failed: HTTP ${resp.status}`);
@@ -699,7 +710,7 @@ export async function downloadImage(imageUrl: string): Promise<{ buffer: Buffer;
     };
   } else {
     // 本地文件读取
-    console.log(`[wecom-app] 使用 fs 读取本地文件: ${imageUrl}`);
+    log.info(`[wecom-app] 使用 fs 读取本地文件: ${imageUrl}`);
     const fs = await import('fs');
     const buffer = await fs.promises.readFile(imageUrl);
     return {
@@ -823,14 +834,16 @@ export async function sendWecomAppImageMessage(
 export async function downloadAndSendImage(
   account: ResolvedWecomAppAccount,
   target: WecomAppSendTarget,
-  imageUrl: string
+  imageUrl: string,
+  logger?: Logger
 ): Promise<SendMessageResult> {
+  const log = resolveApiLogger(logger);
   try {
-    console.log(`[wecom-app] Downloading image from: ${imageUrl}`);
+    log.info(`[wecom-app] Downloading image from: ${imageUrl}`);
 
     // 1. 下载图片
-    const { buffer: imageBuffer, contentType } = await downloadImage(imageUrl);
-    console.log(`[wecom-app] Image downloaded, size: ${imageBuffer.length} bytes, contentType: ${contentType || 'unknown'}`);
+    const { buffer: imageBuffer, contentType } = await downloadImage(imageUrl, log);
+    log.info(`[wecom-app] Image downloaded, size: ${imageBuffer.length} bytes, contentType: ${contentType || "unknown"}`);
 
     // 2. 提取文件扩展名
     const extMatch = imageUrl.match(/\.([^.]+)$/);
@@ -838,18 +851,18 @@ export async function downloadAndSendImage(
     const filename = `image${ext}`;
 
     // 3. 上传获取 media_id
-    console.log(`[wecom-app] Uploading image to WeCom media API, filename: ${filename}`);
+    log.info(`[wecom-app] Uploading image to WeCom media API, filename: ${filename}`);
     const mediaId = await uploadImageMedia(account, imageBuffer, filename, contentType);
-    console.log(`[wecom-app] Image uploaded, media_id: ${mediaId}`);
+    log.info(`[wecom-app] Image uploaded, media_id: ${mediaId}`);
 
     // 4. 发送图片消息
-    console.log(`[wecom-app] Sending image to target:`, target);
+    log.info(`[wecom-app] Sending image to target: ${JSON.stringify(target)}`);
     const result = await sendWecomAppImageMessage(account, target, mediaId);
-    console.log(`[wecom-app] Image sent, ok: ${result.ok}, msgid: ${result.msgid}, errcode: ${result.errcode}, errmsg: ${result.errmsg}`);
+    log.info(`[wecom-app] Image sent, ok: ${result.ok}, msgid: ${result.msgid}, errcode: ${result.errcode}, errmsg: ${result.errmsg}`);
 
     return result;
   } catch (err) {
-    console.error(`[wecom-app] downloadAndSendImage error:`, err);
+    log.error(`[wecom-app] downloadAndSendImage error: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
     return {
       ok: false,
       errcode: -1,
@@ -996,11 +1009,15 @@ export async function sendWecomAppVoiceMessage(
  * @param voiceUrl 语音 URL 或本地文件路径
  * @returns 语音 Buffer
  */
-export async function downloadVoice(voiceUrl: string): Promise<{ buffer: Buffer; contentType?: string }> {
+export async function downloadVoice(
+  voiceUrl: string,
+  logger?: Logger
+): Promise<{ buffer: Buffer; contentType?: string }> {
+  const log = resolveApiLogger(logger);
   // 判断是网络 URL 还是本地路径
   if (voiceUrl.startsWith('http://') || voiceUrl.startsWith('https://')) {
     // 网络下载
-    console.log(`[wecom-app] 使用 HTTP fetch 下载语音: ${voiceUrl}`);
+    log.info(`[wecom-app] 使用 HTTP fetch 下载语音: ${voiceUrl}`);
     const resp = await fetch(voiceUrl);
     if (!resp.ok) {
       throw new Error(`Download voice failed: HTTP ${resp.status}`);
@@ -1012,7 +1029,7 @@ export async function downloadVoice(voiceUrl: string): Promise<{ buffer: Buffer;
     };
   } else {
     // 本地文件读取
-    console.log(`[wecom-app] 使用 fs 读取本地语音文件: ${voiceUrl}`);
+    log.info(`[wecom-app] 使用 fs 读取本地语音文件: ${voiceUrl}`);
     const fs = await import('fs');
     const buffer = await fs.promises.readFile(voiceUrl);
     return {
@@ -1031,21 +1048,23 @@ export async function downloadVoice(voiceUrl: string): Promise<{ buffer: Buffer;
 export async function downloadAndSendVoice(
   account: ResolvedWecomAppAccount,
   target: WecomAppSendTarget,
-  voiceUrl: string
+  voiceUrl: string,
+  logger?: Logger
 ): Promise<SendMessageResult> {
+  const log = resolveApiLogger(logger);
   try {
-    console.log(`[wecom-app] Downloading voice from: ${voiceUrl}`);
+    log.info(`[wecom-app] Downloading voice from: ${voiceUrl}`);
 
     // 企业微信语音消息通常要求 AMR/Speex 等格式。
     // WAV 往往会导致上传/发送失败（ok=false）。这里提前做提示，方便用户定位。
     const voiceExt = (voiceUrl.split("?")[0].match(/\.([^.]+)$/)?.[1] || "").toLowerCase();
     if (voiceExt === "wav") {
-      console.warn(`[wecom-app] Voice format is .wav; WeCom usually expects .amr/.speex. Consider converting to .amr before sending.`);
+      log.warn(`[wecom-app] Voice format is .wav; WeCom usually expects .amr/.speex. Consider converting to .amr before sending.`);
     }
 
     // 1. 下载语音
-    const { buffer: voiceBuffer, contentType } = await downloadVoice(voiceUrl);
-    console.log(`[wecom-app] Voice downloaded, size: ${voiceBuffer.length} bytes, contentType: ${contentType || 'unknown'}`);
+    const { buffer: voiceBuffer, contentType } = await downloadVoice(voiceUrl, log);
+    log.info(`[wecom-app] Voice downloaded, size: ${voiceBuffer.length} bytes, contentType: ${contentType || "unknown"}`);
 
     // 2. 提取文件扩展名
     const extMatch = voiceUrl.match(/\.([^.]+)$/);
@@ -1053,18 +1072,18 @@ export async function downloadAndSendVoice(
     const filename = `voice${ext}`;
 
     // 3. 上传获取 media_id
-    console.log(`[wecom-app] Uploading voice to WeCom media API, filename: ${filename}`);
+    log.info(`[wecom-app] Uploading voice to WeCom media API, filename: ${filename}`);
     const mediaId = await uploadVoiceMedia(account, voiceBuffer, filename, contentType);
-    console.log(`[wecom-app] Voice uploaded, media_id: ${mediaId}`);
+    log.info(`[wecom-app] Voice uploaded, media_id: ${mediaId}`);
 
     // 4. 发送语音消息
-    console.log(`[wecom-app] Sending voice to target:`, target);
+    log.info(`[wecom-app] Sending voice to target: ${JSON.stringify(target)}`);
     const result = await sendWecomAppVoiceMessage(account, target, mediaId);
-    console.log(`[wecom-app] Voice sent, ok: ${result.ok}, msgid: ${result.msgid}, errcode: ${result.errcode}, errmsg: ${result.errmsg}`);
+    log.info(`[wecom-app] Voice sent, ok: ${result.ok}, msgid: ${result.msgid}, errcode: ${result.errcode}, errmsg: ${result.errmsg}`);
 
     return result;
   } catch (err) {
-    console.error(`[wecom-app] downloadAndSendVoice error:`, err);
+    log.error(`[wecom-app] downloadAndSendVoice error: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
 
     const rawMsg = err instanceof Error ? err.message : String(err);
     const voiceExt = (voiceUrl.split("?")[0].match(/\.([^.]+)$/)?.[1] || "").toLowerCase();
@@ -1198,11 +1217,15 @@ export async function sendWecomAppFileMessage(
  * @param fileUrl 文件 URL 或本地文件路径
  * @returns 文件 Buffer
  */
-export async function downloadFile(fileUrl: string): Promise<{ buffer: Buffer; contentType?: string }> {
+export async function downloadFile(
+  fileUrl: string,
+  logger?: Logger
+): Promise<{ buffer: Buffer; contentType?: string }> {
+  const log = resolveApiLogger(logger);
   // 判断是网络 URL 还是本地路径
   if (fileUrl.startsWith('http://') || fileUrl.startsWith('https://')) {
     // 网络下载
-    console.log(`[wecom-app] 使用 HTTP fetch 下载文件: ${fileUrl}`);
+    log.info(`[wecom-app] 使用 HTTP fetch 下载文件: ${fileUrl}`);
     const resp = await fetch(fileUrl);
     if (!resp.ok) {
       throw new Error(`Download file failed: HTTP ${resp.status}`);
@@ -1214,7 +1237,7 @@ export async function downloadFile(fileUrl: string): Promise<{ buffer: Buffer; c
     };
   } else {
     // 本地文件读取
-    console.log(`[wecom-app] 使用 fs 读取本地文件: ${fileUrl}`);
+    log.info(`[wecom-app] 使用 fs 读取本地文件: ${fileUrl}`);
     const fs = await import('fs');
     const buffer = await fs.promises.readFile(fileUrl);
     return {
@@ -1233,14 +1256,16 @@ export async function downloadFile(fileUrl: string): Promise<{ buffer: Buffer; c
 export async function downloadAndSendFile(
   account: ResolvedWecomAppAccount,
   target: WecomAppSendTarget,
-  fileUrl: string
+  fileUrl: string,
+  logger?: Logger
 ): Promise<SendMessageResult> {
+  const log = resolveApiLogger(logger);
   try {
-    console.log(`[wecom-app] Downloading file from: ${fileUrl}`);
+    log.info(`[wecom-app] Downloading file from: ${fileUrl}`);
 
     // 1. 下载文件
-    const { buffer: fileBuffer, contentType } = await downloadFile(fileUrl);
-    console.log(`[wecom-app] File downloaded, size: ${fileBuffer.length} bytes, contentType: ${contentType || 'unknown'}`);
+    const { buffer: fileBuffer, contentType } = await downloadFile(fileUrl, log);
+    log.info(`[wecom-app] File downloaded, size: ${fileBuffer.length} bytes, contentType: ${contentType || "unknown"}`);
 
     // 2. 尽量保留原始文件名（本地路径 / URL path），否则回退为 file.<ext>
     //    注意：企业微信这里更关注 media_id，但保留文件名能提升用户体验。
@@ -1272,18 +1297,18 @@ export async function downloadAndSendFile(
     }
 
     // 3. 上传获取 media_id
-    console.log(`[wecom-app] Uploading file to WeCom media API, filename: ${filename}`);
+    log.info(`[wecom-app] Uploading file to WeCom media API, filename: ${filename}`);
     const mediaId = await uploadMedia(account, fileBuffer, filename, contentType, "file");
-    console.log(`[wecom-app] File uploaded, media_id: ${mediaId}`);
+    log.info(`[wecom-app] File uploaded, media_id: ${mediaId}`);
 
     // 4. 发送文件消息
-    console.log(`[wecom-app] Sending file to target:`, target);
+    log.info(`[wecom-app] Sending file to target: ${JSON.stringify(target)}`);
     const result = await sendWecomAppFileMessage(account, target, mediaId);
-    console.log(`[wecom-app] File sent, ok: ${result.ok}, msgid: ${result.msgid}, errcode: ${result.errcode}, errmsg: ${result.errmsg}`);
+    log.info(`[wecom-app] File sent, ok: ${result.ok}, msgid: ${result.msgid}, errcode: ${result.errcode}, errmsg: ${result.errmsg}`);
 
     return result;
   } catch (err) {
-    console.error(`[wecom-app] downloadAndSendFile error:`, err);
+    log.error(`[wecom-app] downloadAndSendFile error: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
     return {
       ok: false,
       errcode: -1,
