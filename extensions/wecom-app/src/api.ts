@@ -283,7 +283,8 @@ export function stripMarkdown(text: string): string {
 /**
  * 获取 Access Token（带缓存）
  */
-export async function getAccessToken(account: ResolvedWecomAppAccount): Promise<string> {
+export async function getAccessToken(account: ResolvedWecomAppAccount, logger?: Logger): Promise<string> {
+  const log = resolveApiLogger(logger);
   if (!account.corpId || !account.corpSecret) {
     throw new Error("corpId or corpSecret not configured");
   }
@@ -292,9 +293,11 @@ export async function getAccessToken(account: ResolvedWecomAppAccount): Promise<
   const cached = accessTokenCache.get(key);
 
   if (cached && Date.now() < cached.expiresAt) {
+    log.info("[wecom-app] Access token cache hit");
     return cached.token;
   }
 
+  log.info("[wecom-app] Access token cache miss, requesting new token");
   const url = buildWecomApiUrl(
     account,
     `/cgi-bin/gettoken?corpid=${encodeURIComponent(account.corpId)}&corpsecret=${encodeURIComponent(account.corpSecret)}`
@@ -314,6 +317,7 @@ export async function getAccessToken(account: ResolvedWecomAppAccount): Promise<
     token: data.access_token,
     expiresAt: Date.now() + ACCESS_TOKEN_TTL_MS,
   });
+  log.info("[wecom-app] Access token refreshed");
 
   return data.access_token;
 }
@@ -577,7 +581,7 @@ export async function sendWecomAppMessage(
   }
 
   log.info(`[wecom-app] Sending text message to target: ${JSON.stringify(target)}`);
-  const token = await getAccessToken(account);
+  const token = await getAccessToken(account, log);
   const text = stripMarkdown(message);
 
   const payload: Record<string, unknown> = {
