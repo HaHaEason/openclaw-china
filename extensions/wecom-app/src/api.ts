@@ -23,6 +23,16 @@ function resolveApiLogger(logger?: Logger): Logger {
   return logger ?? defaultLogger;
 }
 
+async function parseJsonResponseOrThrow<T>(resp: Response, log: Logger, context: string): Promise<T> {
+  const bodyText = await resp.text();
+  log.info(`[wecom-app] ${context} response status=${resp.status}, body=${bodyText}`);
+  try {
+    return JSON.parse(bodyText) as T;
+  } catch {
+    throw new Error(`${context} returned non-JSON response: status=${resp.status}, body=${bodyText}`);
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 入站媒体：产品级存储策略
 // - 第一步：下载到 tmpdir()/wecom-app-media（快速、安全）
@@ -303,7 +313,11 @@ export async function getAccessToken(account: ResolvedWecomAppAccount, logger?: 
     `/cgi-bin/gettoken?corpid=${encodeURIComponent(account.corpId)}&corpsecret=${encodeURIComponent(account.corpSecret)}`
   );
   const resp = await fetch(url);
-  const data = (await resp.json()) as { errcode?: number; errmsg?: string; access_token?: string };
+  const data = await parseJsonResponseOrThrow<{ errcode?: number; errmsg?: string; access_token?: string }>(
+    resp,
+    log,
+    "gettoken"
+  );
 
   if (data.errcode !== undefined && data.errcode !== 0) {
     throw new Error(`gettoken failed: ${data.errmsg ?? "unknown error"} (errcode=${data.errcode})`);
@@ -481,7 +495,11 @@ export async function downloadWecomMediaToFile(
       // 企业微信失败时可能返回 JSON（errcode/errmsg）
       if ((contentType ?? "").includes("application/json")) {
         try {
-          const j = (await resp.json()) as { errcode?: number; errmsg?: string };
+          const j = await parseJsonResponseOrThrow<{ errcode?: number; errmsg?: string }>(
+            resp,
+            defaultLogger,
+            "media/get"
+          );
           return { ok: false, error: `media/get returned json: errcode=${j?.errcode} errmsg=${j?.errmsg}` };
         } catch (err) {
           return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -603,7 +621,11 @@ export async function sendWecomAppMessage(
     }
   );
 
-  const data = (await resp.json()) as SendMessageResult & { errcode?: number };
+  const data = await parseJsonResponseOrThrow<SendMessageResult & { errcode?: number }>(
+    resp,
+    log,
+    "message/send(text)"
+  );
 
   log.info(`[wecom-app] Text message sent, ok: ${data.errcode === 0}, msgid: ${data.msgid}, errcode: ${data.errcode}, errmsg: ${data.errmsg}`);
   return {
@@ -623,8 +645,10 @@ export async function sendWecomAppMessage(
 export async function sendWecomAppMarkdownMessage(
   account: ResolvedWecomAppAccount,
   target: WecomAppSendTarget,
-  markdownContent: string
+  markdownContent: string,
+  logger?: Logger
 ): Promise<SendMessageResult> {
+  const log = resolveApiLogger(logger);
   if (!account.canSendActive) {
     return {
       ok: false,
@@ -633,7 +657,7 @@ export async function sendWecomAppMarkdownMessage(
     };
   }
 
-  const token = await getAccessToken(account);
+  const token = await getAccessToken(account, log);
 
   const payload: Record<string, unknown> = {
     msgtype: "markdown",
@@ -651,7 +675,11 @@ export async function sendWecomAppMarkdownMessage(
     }
   );
 
-  const data = (await resp.json()) as SendMessageResult & { errcode?: number };
+  const data = await parseJsonResponseOrThrow<SendMessageResult & { errcode?: number }>(
+    resp,
+    log,
+    "message/send(markdown)"
+  );
 
   return {
     ok: data.errcode === 0,
@@ -741,13 +769,15 @@ export async function uploadImageMedia(
   account: ResolvedWecomAppAccount,
   imageBuffer: Buffer,
   filename = "image.jpg",
-  contentType?: string
+  contentType?: string,
+  logger?: Logger
 ): Promise<string> {
+  const log = resolveApiLogger(logger);
   if (!account.canSendActive) {
     throw new Error("Account not configured for active sending");
   }
 
-  const token = await getAccessToken(account);
+  const token = await getAccessToken(account, log);
   const mimeType = getMimeType(filename, contentType);
   const boundary = `----FormBoundary${Date.now()}`;
 
@@ -771,7 +801,11 @@ export async function uploadImageMedia(
     }
   );
 
-  const data = (await resp.json()) as { errcode?: number; errmsg?: string; media_id?: string };
+  const data = await parseJsonResponseOrThrow<{ errcode?: number; errmsg?: string; media_id?: string }>(
+    resp,
+    log,
+    "media/upload(image)"
+  );
 
   if (data.errcode !== undefined && data.errcode !== 0) {
     throw new Error(`Upload image failed: ${data.errmsg ?? "unknown error"} (errcode=${data.errcode})`);
@@ -793,8 +827,10 @@ export async function uploadImageMedia(
 export async function sendWecomAppImageMessage(
   account: ResolvedWecomAppAccount,
   target: WecomAppSendTarget,
-  mediaId: string
+  mediaId: string,
+  logger?: Logger
 ): Promise<SendMessageResult> {
+  const log = resolveApiLogger(logger);
   if (!account.canSendActive) {
     return {
       ok: false,
@@ -803,7 +839,7 @@ export async function sendWecomAppImageMessage(
     };
   }
 
-  const token = await getAccessToken(account);
+  const token = await getAccessToken(account, log);
 
   const payload: Record<string, unknown> = {
     msgtype: "image",
@@ -821,7 +857,11 @@ export async function sendWecomAppImageMessage(
     }
   );
 
-  const data = (await resp.json()) as SendMessageResult & { errcode?: number };
+  const data = await parseJsonResponseOrThrow<SendMessageResult & { errcode?: number }>(
+    resp,
+    log,
+    "message/send(image)"
+  );
 
   return {
     ok: data.errcode === 0,
@@ -861,12 +901,12 @@ export async function downloadAndSendImage(
 
     // 3. 上传获取 media_id
     log.info(`[wecom-app] Uploading image to WeCom media API, filename: ${filename}`);
-    const mediaId = await uploadImageMedia(account, imageBuffer, filename, contentType);
+    const mediaId = await uploadImageMedia(account, imageBuffer, filename, contentType, log);
     log.info(`[wecom-app] Image uploaded, media_id: ${mediaId}`);
 
     // 4. 发送图片消息
     log.info(`[wecom-app] Sending image to target: ${JSON.stringify(target)}`);
-    const result = await sendWecomAppImageMessage(account, target, mediaId);
+    const result = await sendWecomAppImageMessage(account, target, mediaId, log);
     log.info(`[wecom-app] Image sent, ok: ${result.ok}, msgid: ${result.msgid}, errcode: ${result.errcode}, errmsg: ${result.errmsg}`);
 
     return result;
@@ -920,13 +960,15 @@ export async function uploadVoiceMedia(
   account: ResolvedWecomAppAccount,
   voiceBuffer: Buffer,
   filename = "voice.amr",
-  contentType?: string
+  contentType?: string,
+  logger?: Logger
 ): Promise<string> {
+  const log = resolveApiLogger(logger);
   if (!account.canSendActive) {
     throw new Error("Account not configured for active sending");
   }
 
-  const token = await getAccessToken(account);
+  const token = await getAccessToken(account, log);
   const mimeType = getVoiceMimeType(filename, contentType);
   const boundary = `----FormBoundary${Date.now()}`;
 
@@ -950,7 +992,11 @@ export async function uploadVoiceMedia(
     }
   );
 
-  const data = (await resp.json()) as { errcode?: number; errmsg?: string; media_id?: string };
+  const data = await parseJsonResponseOrThrow<{ errcode?: number; errmsg?: string; media_id?: string }>(
+    resp,
+    log,
+    "media/upload(voice)"
+  );
 
   if (data.errcode !== undefined && data.errcode !== 0) {
     throw new Error(`Upload voice failed: ${data.errmsg ?? "unknown error"} (errcode=${data.errcode})`);
@@ -972,8 +1018,10 @@ export async function uploadVoiceMedia(
 export async function sendWecomAppVoiceMessage(
   account: ResolvedWecomAppAccount,
   target: WecomAppSendTarget,
-  mediaId: string
+  mediaId: string,
+  logger?: Logger
 ): Promise<SendMessageResult> {
+  const log = resolveApiLogger(logger);
   if (!account.canSendActive) {
     return {
       ok: false,
@@ -982,7 +1030,7 @@ export async function sendWecomAppVoiceMessage(
     };
   }
 
-  const token = await getAccessToken(account);
+  const token = await getAccessToken(account, log);
 
   const payload: Record<string, unknown> = {
     msgtype: "voice",
@@ -1000,7 +1048,11 @@ export async function sendWecomAppVoiceMessage(
     }
   );
 
-  const data = (await resp.json()) as SendMessageResult & { errcode?: number };
+  const data = await parseJsonResponseOrThrow<SendMessageResult & { errcode?: number }>(
+    resp,
+    log,
+    "message/send(voice)"
+  );
 
   return {
     ok: data.errcode === 0,
@@ -1082,12 +1134,12 @@ export async function downloadAndSendVoice(
 
     // 3. 上传获取 media_id
     log.info(`[wecom-app] Uploading voice to WeCom media API, filename: ${filename}`);
-    const mediaId = await uploadVoiceMedia(account, voiceBuffer, filename, contentType);
+    const mediaId = await uploadVoiceMedia(account, voiceBuffer, filename, contentType, log);
     log.info(`[wecom-app] Voice uploaded, media_id: ${mediaId}`);
 
     // 4. 发送语音消息
     log.info(`[wecom-app] Sending voice to target: ${JSON.stringify(target)}`);
-    const result = await sendWecomAppVoiceMessage(account, target, mediaId);
+    const result = await sendWecomAppVoiceMessage(account, target, mediaId, log);
     log.info(`[wecom-app] Voice sent, ok: ${result.ok}, msgid: ${result.msgid}, errcode: ${result.errcode}, errmsg: ${result.errmsg}`);
 
     return result;
@@ -1128,13 +1180,15 @@ export async function uploadMedia(
   buffer: Buffer,
   filename = "file.bin",
   contentType?: string,
-  type: "image" | "voice" | "video" | "file" = "file"
+  type: "image" | "voice" | "video" | "file" = "file",
+  logger?: Logger
 ): Promise<string> {
+  const log = resolveApiLogger(logger);
   if (!account.canSendActive) {
     throw new Error("Account not configured for active sending");
   }
 
-  const token = await getAccessToken(account);
+  const token = await getAccessToken(account, log);
   const boundary = `----FormBoundary${Date.now()}`;
 
   // 构造 multipart/form-data
@@ -1157,7 +1211,11 @@ export async function uploadMedia(
     }
   );
 
-  const data = (await resp.json()) as { errcode?: number; errmsg?: string; media_id?: string };
+  const data = await parseJsonResponseOrThrow<{ errcode?: number; errmsg?: string; media_id?: string }>(
+    resp,
+    log,
+    `media/upload(${type})`
+  );
 
   if (data.errcode !== undefined && data.errcode !== 0) {
     throw new Error(`Upload ${type} failed: ${data.errmsg ?? "unknown error"} (errcode=${data.errcode})`);
@@ -1179,8 +1237,10 @@ export async function uploadMedia(
 export async function sendWecomAppFileMessage(
   account: ResolvedWecomAppAccount,
   target: WecomAppSendTarget,
-  mediaId: string
+  mediaId: string,
+  logger?: Logger
 ): Promise<SendMessageResult> {
+  const log = resolveApiLogger(logger);
   if (!account.canSendActive) {
     return {
       ok: false,
@@ -1189,7 +1249,7 @@ export async function sendWecomAppFileMessage(
     };
   }
 
-  const token = await getAccessToken(account);
+  const token = await getAccessToken(account, log);
 
   const payload: Record<string, unknown> = {
     msgtype: "file",
@@ -1208,7 +1268,11 @@ export async function sendWecomAppFileMessage(
     }
   );
 
-  const data = (await resp.json()) as SendMessageResult & { errcode?: number };
+  const data = await parseJsonResponseOrThrow<SendMessageResult & { errcode?: number }>(
+    resp,
+    log,
+    "message/send(file)"
+  );
 
   return {
     ok: data.errcode === 0,
@@ -1307,12 +1371,12 @@ export async function downloadAndSendFile(
 
     // 3. 上传获取 media_id
     log.info(`[wecom-app] Uploading file to WeCom media API, filename: ${filename}`);
-    const mediaId = await uploadMedia(account, fileBuffer, filename, contentType, "file");
+    const mediaId = await uploadMedia(account, fileBuffer, filename, contentType, "file", log);
     log.info(`[wecom-app] File uploaded, media_id: ${mediaId}`);
 
     // 4. 发送文件消息
     log.info(`[wecom-app] Sending file to target: ${JSON.stringify(target)}`);
-    const result = await sendWecomAppFileMessage(account, target, mediaId);
+    const result = await sendWecomAppFileMessage(account, target, mediaId, log);
     log.info(`[wecom-app] File sent, ok: ${result.ok}, msgid: ${result.msgid}, errcode: ${result.errcode}, errmsg: ${result.errmsg}`);
 
     return result;
