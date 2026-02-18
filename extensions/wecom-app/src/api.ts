@@ -10,7 +10,7 @@ import {
   resolveApiBaseUrl,
 } from "./config.js";
 import { createLogger, type Logger } from "@openclaw-china/shared";
-import { mkdir, writeFile, unlink, rename, readdir, stat } from "node:fs/promises";
+import { mkdir, writeFile, unlink, rename, readdir, stat, copyFile } from "node:fs/promises";
 import { basename, join, extname } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -192,6 +192,26 @@ export async function finalizeInboundMedia(account: ResolvedWecomAppAccount, fil
     );
     return dest;
   } catch (err) {
+    // Docker/容器场景常见：tmp 与 home 在不同挂载点，rename 会抛 EXDEV。
+    // 该情况下改为 copy + unlink，保持“最终路径可用”。
+    const code = typeof err === "object" && err !== null && "code" in err
+      ? String((err as { code?: unknown }).code ?? "")
+      : "";
+    if (code === "EXDEV") {
+      try {
+        await copyFile(p, dest);
+        await unlink(p).catch(() => undefined);
+        defaultLogger.info(
+          `[wecom-app] inbound-media finalize cross-device copied accountId=${account.accountId} from=${p} to=${dest}`
+        );
+        return dest;
+      } catch (copyErr) {
+        defaultLogger.warn(
+          `[wecom-app] inbound-media finalize cross-device copy failed accountId=${account.accountId} from=${p} to=${dest} detail=${copyErr instanceof Error ? copyErr.message : String(copyErr)}`
+        );
+      }
+    }
+
     defaultLogger.warn(
       `[wecom-app] inbound-media finalize move failed accountId=${account.accountId} from=${p} to=${dest} detail=${err instanceof Error ? err.message : String(err)}`
     );
