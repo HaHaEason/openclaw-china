@@ -23,9 +23,117 @@ function resolveApiLogger(logger?: Logger): Logger {
   return logger ?? defaultLogger;
 }
 
+type ActiveSendFailureCategory =
+  | "timeout"
+  | "service_unavailable"
+  | "network_unreachable"
+  | "dns_error"
+  | "tls_error"
+  | "http_error"
+  | "api_rejected"
+  | "unknown";
+
+function redactAccessToken(input: string): string {
+  return input.replace(/access_token=[^&]+/g, "access_token=***");
+}
+
+function classifyRequestError(err: unknown): { category: ActiveSendFailureCategory; code?: string; detail: string } {
+  if (err instanceof TimeoutError) {
+    return { category: "timeout", detail: err.message };
+  }
+
+  const code = typeof err === "object" && err !== null && "code" in err
+    ? String((err as { code?: unknown }).code ?? "")
+    : undefined;
+  const message = err instanceof Error ? err.message : String(err);
+  const lower = message.toLowerCase();
+  const name = err instanceof Error ? err.name.toLowerCase() : "";
+
+  if (
+    name === "aborterror" ||
+    lower.includes("timed out") ||
+    lower.includes("timeout") ||
+    code === "ETIMEDOUT" ||
+    code === "UND_ERR_CONNECT_TIMEOUT"
+  ) {
+    return { category: "timeout", code, detail: message };
+  }
+
+  if (code === "ENOTFOUND" || code === "EAI_AGAIN") {
+    return { category: "dns_error", code, detail: message };
+  }
+
+  if (code === "ECONNREFUSED" || code === "EHOSTUNREACH" || code === "ENETUNREACH" || code === "ECONNRESET") {
+    return { category: "network_unreachable", code, detail: message };
+  }
+
+  if (
+    lower.includes("tls") ||
+    lower.includes("ssl") ||
+    code === "CERT_HAS_EXPIRED" ||
+    code === "UNABLE_TO_VERIFY_LEAF_SIGNATURE" ||
+    code === "DEPTH_ZERO_SELF_SIGNED_CERT"
+  ) {
+    return { category: "tls_error", code, detail: message };
+  }
+
+  return { category: "unknown", code, detail: message };
+}
+
+function classifyHttpStatus(status: number): ActiveSendFailureCategory {
+  if (status >= 500) return "service_unavailable";
+  if (status >= 400) return "http_error";
+  return "unknown";
+}
+
+function logActiveSendFailure(params: {
+  log: Logger;
+  stage: string;
+  endpoint?: string;
+  startedAt: number;
+  category: ActiveSendFailureCategory;
+  detail: string;
+  code?: string;
+  status?: number;
+}): void {
+  const { log, stage, endpoint, startedAt, category, detail, code, status } = params;
+  const elapsedMs = Date.now() - startedAt;
+  log.error(
+    `[wecom-app] active-send failure: ${JSON.stringify({
+      stage,
+      endpoint: endpoint ? redactAccessToken(endpoint) : undefined,
+      category,
+      status,
+      code,
+      elapsedMs,
+      detail,
+    })}`
+  );
+}
+
 async function parseJsonResponseOrThrow<T>(resp: Response, log: Logger, context: string): Promise<T> {
-  const bodyText = await resp.text();
-  log.info(`[wecom-app] ${context} response status=${resp.status}, body=${bodyText}`);
+  let bodyText = "";
+  if (typeof (resp as { text?: unknown }).text === "function") {
+    bodyText = await resp.text();
+  } else if (typeof (resp as { json?: unknown }).json === "function") {
+    const body = await resp.json();
+    bodyText = JSON.stringify(body);
+  } else {
+    throw new Error(`${context} returned non-readable response`);
+  }
+
+  const status = typeof resp.status === "number" ? resp.status : 200;
+  log.info(`[wecom-app] ${context} response status=${status}, body=${bodyText}`);
+  if (status >= 400) {
+    const category = classifyHttpStatus(status);
+    log.error(
+      `[wecom-app] ${context} upstream-http-failure: ${JSON.stringify({
+        category,
+        status,
+        body: bodyText,
+      })}`
+    );
+  }
   try {
     return JSON.parse(bodyText) as T;
   } catch {
@@ -312,14 +420,38 @@ export async function getAccessToken(account: ResolvedWecomAppAccount, logger?: 
     account,
     `/cgi-bin/gettoken?corpid=${encodeURIComponent(account.corpId)}&corpsecret=${encodeURIComponent(account.corpSecret)}`
   );
-  const resp = await fetch(url);
-  const data = await parseJsonResponseOrThrow<{ errcode?: number; errmsg?: string; access_token?: string }>(
-    resp,
-    log,
-    "gettoken"
-  );
+  const startedAt = Date.now();
+  let data: { errcode?: number; errmsg?: string; access_token?: string };
+  try {
+    const resp = await fetch(url);
+    data = await parseJsonResponseOrThrow<{ errcode?: number; errmsg?: string; access_token?: string }>(
+      resp,
+      log,
+      "gettoken"
+    );
+  } catch (err) {
+    const classified = classifyRequestError(err);
+    logActiveSendFailure({
+      log,
+      stage: "gettoken",
+      endpoint: url,
+      startedAt,
+      category: classified.category,
+      detail: classified.detail,
+      code: classified.code,
+    });
+    throw err;
+  }
 
   if (data.errcode !== undefined && data.errcode !== 0) {
+    logActiveSendFailure({
+      log,
+      stage: "gettoken",
+      endpoint: url,
+      startedAt,
+      category: "api_rejected",
+      detail: `errcode=${data.errcode}, errmsg=${data.errmsg ?? ""}`,
+    });
     throw new Error(`gettoken failed: ${data.errmsg ?? "unknown error"} (errcode=${data.errcode})`);
   }
 
@@ -612,22 +744,45 @@ export async function sendWecomAppMessage(
   // 注意：企业微信 API 要求 access_token 作为查询参数传递。
   // 这可能会在服务器日志、浏览器历史和引用头中暴露令牌。
   // 确保任何记录此 URL 的日志都隐藏 access_token 参数。
-  const resp = await fetch(
-    buildWecomApiUrl(account, `/cgi-bin/message/send?access_token=${encodeURIComponent(token)}`),
-    {
+  const sendUrl = buildWecomApiUrl(account, `/cgi-bin/message/send?access_token=${encodeURIComponent(token)}`);
+  const startedAt = Date.now();
+  let data: SendMessageResult & { errcode?: number };
+  try {
+    const resp = await fetch(sendUrl, {
       method: "POST",
       body: JSON.stringify(payload),
       headers: { "Content-Type": "application/json" },
-    }
-  );
-
-  const data = await parseJsonResponseOrThrow<SendMessageResult & { errcode?: number }>(
-    resp,
-    log,
-    "message/send(text)"
-  );
+    });
+    data = await parseJsonResponseOrThrow<SendMessageResult & { errcode?: number }>(
+      resp,
+      log,
+      "message/send(text)"
+    );
+  } catch (err) {
+    const classified = classifyRequestError(err);
+    logActiveSendFailure({
+      log,
+      stage: "message/send(text)",
+      endpoint: sendUrl,
+      startedAt,
+      category: classified.category,
+      detail: classified.detail,
+      code: classified.code,
+    });
+    throw err;
+  }
 
   log.info(`[wecom-app] Text message sent, ok: ${data.errcode === 0}, msgid: ${data.msgid}, errcode: ${data.errcode}, errmsg: ${data.errmsg}`);
+  if (data.errcode !== undefined && data.errcode !== 0) {
+    logActiveSendFailure({
+      log,
+      stage: "message/send(text)",
+      endpoint: sendUrl,
+      startedAt,
+      category: "api_rejected",
+      detail: `errcode=${data.errcode}, errmsg=${data.errmsg ?? ""}, invaliduser=${data.invaliduser ?? ""}`,
+    });
+  }
   return {
     ok: data.errcode === 0,
     errcode: data.errcode,
@@ -666,20 +821,44 @@ export async function sendWecomAppMarkdownMessage(
     touser: target.userId,
   };
 
-  const resp = await fetch(
-    buildWecomApiUrl(account, `/cgi-bin/message/send?access_token=${encodeURIComponent(token)}`),
-    {
+  const sendUrl = buildWecomApiUrl(account, `/cgi-bin/message/send?access_token=${encodeURIComponent(token)}`);
+  const startedAt = Date.now();
+  let data: SendMessageResult & { errcode?: number };
+  try {
+    const resp = await fetch(sendUrl, {
       method: "POST",
       body: JSON.stringify(payload),
       headers: { "Content-Type": "application/json" },
-    }
-  );
+    });
+    data = await parseJsonResponseOrThrow<SendMessageResult & { errcode?: number }>(
+      resp,
+      log,
+      "message/send(markdown)"
+    );
+  } catch (err) {
+    const classified = classifyRequestError(err);
+    logActiveSendFailure({
+      log,
+      stage: "message/send(markdown)",
+      endpoint: sendUrl,
+      startedAt,
+      category: classified.category,
+      detail: classified.detail,
+      code: classified.code,
+    });
+    throw err;
+  }
 
-  const data = await parseJsonResponseOrThrow<SendMessageResult & { errcode?: number }>(
-    resp,
-    log,
-    "message/send(markdown)"
-  );
+  if (data.errcode !== undefined && data.errcode !== 0) {
+    logActiveSendFailure({
+      log,
+      stage: "message/send(markdown)",
+      endpoint: sendUrl,
+      startedAt,
+      category: "api_rejected",
+      detail: `errcode=${data.errcode}, errmsg=${data.errmsg ?? ""}, invaliduser=${data.invaliduser ?? ""}`,
+    });
+  }
 
   return {
     ok: data.errcode === 0,
@@ -848,20 +1027,44 @@ export async function sendWecomAppImageMessage(
     touser: target.userId,
   };
 
-  const resp = await fetch(
-    buildWecomApiUrl(account, `/cgi-bin/message/send?access_token=${encodeURIComponent(token)}`),
-    {
+  const sendUrl = buildWecomApiUrl(account, `/cgi-bin/message/send?access_token=${encodeURIComponent(token)}`);
+  const startedAt = Date.now();
+  let data: SendMessageResult & { errcode?: number };
+  try {
+    const resp = await fetch(sendUrl, {
       method: "POST",
       body: JSON.stringify(payload),
       headers: { "Content-Type": "application/json" },
-    }
-  );
+    });
+    data = await parseJsonResponseOrThrow<SendMessageResult & { errcode?: number }>(
+      resp,
+      log,
+      "message/send(image)"
+    );
+  } catch (err) {
+    const classified = classifyRequestError(err);
+    logActiveSendFailure({
+      log,
+      stage: "message/send(image)",
+      endpoint: sendUrl,
+      startedAt,
+      category: classified.category,
+      detail: classified.detail,
+      code: classified.code,
+    });
+    throw err;
+  }
 
-  const data = await parseJsonResponseOrThrow<SendMessageResult & { errcode?: number }>(
-    resp,
-    log,
-    "message/send(image)"
-  );
+  if (data.errcode !== undefined && data.errcode !== 0) {
+    logActiveSendFailure({
+      log,
+      stage: "message/send(image)",
+      endpoint: sendUrl,
+      startedAt,
+      category: "api_rejected",
+      detail: `errcode=${data.errcode}, errmsg=${data.errmsg ?? ""}, invaliduser=${data.invaliduser ?? ""}`,
+    });
+  }
 
   return {
     ok: data.errcode === 0,
@@ -1039,20 +1242,44 @@ export async function sendWecomAppVoiceMessage(
     touser: target.userId,
   };
 
-  const resp = await fetch(
-    buildWecomApiUrl(account, `/cgi-bin/message/send?access_token=${encodeURIComponent(token)}`),
-    {
+  const sendUrl = buildWecomApiUrl(account, `/cgi-bin/message/send?access_token=${encodeURIComponent(token)}`);
+  const startedAt = Date.now();
+  let data: SendMessageResult & { errcode?: number };
+  try {
+    const resp = await fetch(sendUrl, {
       method: "POST",
       body: JSON.stringify(payload),
       headers: { "Content-Type": "application/json" },
-    }
-  );
+    });
+    data = await parseJsonResponseOrThrow<SendMessageResult & { errcode?: number }>(
+      resp,
+      log,
+      "message/send(voice)"
+    );
+  } catch (err) {
+    const classified = classifyRequestError(err);
+    logActiveSendFailure({
+      log,
+      stage: "message/send(voice)",
+      endpoint: sendUrl,
+      startedAt,
+      category: classified.category,
+      detail: classified.detail,
+      code: classified.code,
+    });
+    throw err;
+  }
 
-  const data = await parseJsonResponseOrThrow<SendMessageResult & { errcode?: number }>(
-    resp,
-    log,
-    "message/send(voice)"
-  );
+  if (data.errcode !== undefined && data.errcode !== 0) {
+    logActiveSendFailure({
+      log,
+      stage: "message/send(voice)",
+      endpoint: sendUrl,
+      startedAt,
+      category: "api_rejected",
+      detail: `errcode=${data.errcode}, errmsg=${data.errmsg ?? ""}, invaliduser=${data.invaliduser ?? ""}`,
+    });
+  }
 
   return {
     ok: data.errcode === 0,
@@ -1259,20 +1486,44 @@ export async function sendWecomAppFileMessage(
     touser: target.userId,
   };
 
-  const resp = await fetch(
-    buildWecomApiUrl(account, `/cgi-bin/message/send?access_token=${encodeURIComponent(token)}`),
-    {
+  const sendUrl = buildWecomApiUrl(account, `/cgi-bin/message/send?access_token=${encodeURIComponent(token)}`);
+  const startedAt = Date.now();
+  let data: SendMessageResult & { errcode?: number };
+  try {
+    const resp = await fetch(sendUrl, {
       method: "POST",
       body: JSON.stringify(payload),
       headers: { "Content-Type": "application/json" },
-    }
-  );
+    });
+    data = await parseJsonResponseOrThrow<SendMessageResult & { errcode?: number }>(
+      resp,
+      log,
+      "message/send(file)"
+    );
+  } catch (err) {
+    const classified = classifyRequestError(err);
+    logActiveSendFailure({
+      log,
+      stage: "message/send(file)",
+      endpoint: sendUrl,
+      startedAt,
+      category: classified.category,
+      detail: classified.detail,
+      code: classified.code,
+    });
+    throw err;
+  }
 
-  const data = await parseJsonResponseOrThrow<SendMessageResult & { errcode?: number }>(
-    resp,
-    log,
-    "message/send(file)"
-  );
+  if (data.errcode !== undefined && data.errcode !== 0) {
+    logActiveSendFailure({
+      log,
+      stage: "message/send(file)",
+      endpoint: sendUrl,
+      startedAt,
+      category: "api_rejected",
+      detail: `errcode=${data.errcode}, errmsg=${data.errmsg ?? ""}, invaliduser=${data.invaliduser ?? ""}`,
+    });
+  }
 
   return {
     ok: data.errcode === 0,
