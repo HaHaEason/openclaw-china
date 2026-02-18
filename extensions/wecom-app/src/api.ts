@@ -733,6 +733,7 @@ export async function sendWecomAppMessage(
   log.info(`[wecom-app] Sending text message to target: ${JSON.stringify(target)}`);
   const token = await getAccessToken(account, log);
   const text = stripMarkdown(message);
+  log.info(`[wecom-app] Sending text message content: ${text}`);
 
   const payload: Record<string, unknown> = {
     msgtype: "text",
@@ -813,6 +814,7 @@ export async function sendWecomAppMarkdownMessage(
   }
 
   const token = await getAccessToken(account, log);
+  log.info(`[wecom-app] Sending markdown message content: ${markdownContent}`);
 
   const payload: Record<string, unknown> = {
     msgtype: "markdown",
