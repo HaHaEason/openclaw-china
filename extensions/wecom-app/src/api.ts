@@ -187,14 +187,24 @@ export async function finalizeInboundMedia(account: ResolvedWecomAppAccount, fil
 
   try {
     await rename(p, dest);
+    defaultLogger.info(
+      `[wecom-app] inbound-media finalize success accountId=${account.accountId} from=${p} to=${dest}`
+    );
     return dest;
-  } catch {
+  } catch (err) {
+    defaultLogger.warn(
+      `[wecom-app] inbound-media finalize move failed accountId=${account.accountId} from=${p} to=${dest} detail=${err instanceof Error ? err.message : String(err)}`
+    );
     // 移动失败就退化为“尽力删除”（避免 tmp 爆炸），但不抛出
     try {
       await unlink(p);
+      defaultLogger.warn(`[wecom-app] inbound-media finalize fallback removed tmp file accountId=${account.accountId} path=${p}`);
     } catch {
       // ignore
     }
+    defaultLogger.warn(
+      `[wecom-app] inbound-media finalize fallback returning original path accountId=${account.accountId} path=${p}`
+    );
     return p;
   }
 }
@@ -586,6 +596,9 @@ export async function downloadWecomMediaToFile(
 
   // 支持企业微信 media_id 和直接的 http(s) URL
   const isHttp = raw.startsWith("http://") || raw.startsWith("https://");
+  defaultLogger.info(
+    `[wecom-app] inbound-media download start accountId=${account.accountId} sourceType=${isHttp ? "url" : "media_id"} prefix=${opts.prefix ?? "media"} maxBytes=${opts.maxBytes}`
+  );
 
   // 设置超时中止控制器
   const controller = new AbortController();
@@ -688,6 +701,9 @@ export async function downloadWecomMediaToFile(
     const outPath = join(baseDir, filename);
 
     await writeFile(outPath, buf);
+    defaultLogger.info(
+      `[wecom-app] inbound-media download success accountId=${account.accountId} path=${outPath} size=${buf.length} contentType=${contentType ?? "unknown"}`
+    );
 
     return {
       ok: true,
@@ -700,6 +716,9 @@ export async function downloadWecomMediaToFile(
     if (err instanceof Error && err.name === "AbortError") {
       throw new TimeoutError(DOWNLOAD_TIMEOUT);
     }
+    defaultLogger.error(
+      `[wecom-app] inbound-media download failed accountId=${account.accountId} sourceType=${isHttp ? "url" : "media_id"} detail=${err instanceof Error ? err.message : String(err)}`
+    );
     throw err;
   } finally {
     clearTimeout(timeoutId);

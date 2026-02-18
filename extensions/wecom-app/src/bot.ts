@@ -13,7 +13,7 @@ import {
   transcribeTencentFlash,
   type Logger,
 } from "@openclaw-china/shared";
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 
 import type { PluginRuntime } from "./runtime.js";
 import type { ResolvedWecomAppAccount, WecomAppInboundMessage, WecomAppDmPolicy } from "./types.js";
@@ -281,16 +281,37 @@ export async function enrichInboundContentWithMedia(params: {
       const mediaId = String((msg as { MediaId?: string }).MediaId ?? "").trim();
       const recognition = String((msg as { Recognition?: string }).Recognition ?? "").trim();
       const asrCredentials = resolveWecomAppASRCredentials(accountConfig);
+      const msgId = String(msg.msgid ?? msg.MsgId ?? "");
+
+      logger?.info(
+        `[voice-inbound] start accountId=${account.accountId} msgId=${msgId} mediaId=${mediaId ? "yes" : "no"} recognition=${recognition ? "yes" : "no"} asr=${asrCredentials ? "enabled" : "disabled"}`
+      );
 
       if (mediaId) {
         const saved = await downloadWecomMediaToFile(account, mediaId, { maxBytes, prefix: "voice" });
         if (saved.ok && saved.path) {
+          logger?.info(
+            `[voice-inbound] download success accountId=${account.accountId} msgId=${msgId} tmpPath=${saved.path} size=${saved.size ?? -1} mime=${saved.mimeType ?? "unknown"}`
+          );
           const finalPath = await finalizeInboundMedia(account, saved.path);
           mediaPaths.push(finalPath);
+          try {
+            const st = await stat(finalPath);
+            logger?.info(
+              `[voice-inbound] file ready accountId=${account.accountId} msgId=${msgId} path=${finalPath} size=${st.size}`
+            );
+          } catch (err) {
+            logger?.warn(
+              `[voice-inbound] file missing after finalize accountId=${account.accountId} msgId=${msgId} path=${finalPath} detail=${err instanceof Error ? err.message : String(err)}`
+            );
+          }
 
           if (asrCredentials) {
             try {
               const audio = await readFile(finalPath);
+              logger?.info(
+                `[voice-inbound] read audio for asr accountId=${account.accountId} msgId=${msgId} path=${finalPath} bytes=${audio.length}`
+              );
               const asrConfig: {
                 appId: string;
                 secretId: string;
@@ -321,7 +342,7 @@ export async function enrichInboundContentWithMedia(params: {
             } catch (err) {
               asrErrorMessage = err instanceof Error ? err.message : String(err);
               logger?.warn(
-                `[voice-asr] transcription failed accountId=${account.accountId} msgId=${String(msg.msgid ?? msg.MsgId ?? "")} detail=${formatASRErrorLog(err)}`
+                `[voice-asr] transcription failed accountId=${account.accountId} msgId=${msgId} path=${finalPath} detail=${formatASRErrorLog(err)}`
               );
               // ASR 失败时保持兼容回退：优先使用企业微信自带 Recognition，再回退文件路径。
             }
@@ -334,6 +355,9 @@ export async function enrichInboundContentWithMedia(params: {
           return makeResult(`[voice] saved:${finalPath}`);
         }
         // 回退：如果保存失败，包含识别文本
+        logger?.warn(
+          `[voice-inbound] save failed accountId=${account.accountId} msgId=${msgId} detail=${saved.error ?? "unknown"}`
+        );
         if (recognition) {
           return makeResult(`[voice] (save failed) ${saved.error ?? ""}\n[recognition] ${recognition}`.trim());
         }
@@ -341,6 +365,9 @@ export async function enrichInboundContentWithMedia(params: {
       }
 
       // 没有 mediaId，如果有识别文本则返回
+      logger?.warn(
+        `[voice-inbound] missing mediaId accountId=${account.accountId} msgId=${msgId} recognition=${recognition ? "yes" : "no"}`
+      );
       if (recognition) {
         return makeResult(`[voice]\n[recognition] ${recognition}`);
       }
@@ -348,6 +375,9 @@ export async function enrichInboundContentWithMedia(params: {
     } catch (err) {
       const recognition = String((msg as { Recognition?: string }).Recognition ?? "").trim();
       const errorMsg = err instanceof Error ? err.message : String(err);
+      logger?.error(
+        `[voice-inbound] download error accountId=${account.accountId} msgId=${String(msg.msgid ?? msg.MsgId ?? "")} detail=${errorMsg}`
+      );
       if (recognition) {
         return makeResult(`[voice] (download error: ${errorMsg})\n[recognition] ${recognition}`);
       }
