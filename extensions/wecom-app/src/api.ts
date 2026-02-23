@@ -774,63 +774,114 @@ export async function sendWecomAppMessage(
   const text = stripMarkdown(message);
   log.info(`[wecom-app] Sending text message content: ${text}`);
 
-  const payload: Record<string, unknown> = {
-    msgtype: "text",
-    agentid: account.agentId,
-    text: { content: text },
-    touser: target.userId,
+  const WEAPP_TEXT_MAX_BYTES = 2000;
+  const WEAPP_TEXT_CHUNK_DELAY_MS = 500;
+
+  const splitTextByByteLength = (input: string, maxBytes: number): string[] => {
+    if (Buffer.byteLength(input, "utf8") <= maxBytes) return [input];
+    const parts: string[] = [];
+    let current = "";
+    let currentBytes = 0;
+    for (const ch of input) {
+      const chBytes = Buffer.byteLength(ch, "utf8");
+      if (currentBytes + chBytes > maxBytes) {
+        if (current) parts.push(current);
+        current = ch;
+        currentBytes = chBytes;
+      } else {
+        current += ch;
+        currentBytes += chBytes;
+      }
+    }
+    if (current) parts.push(current);
+    return parts;
   };
 
-  // 注意：企业微信 API 要求 access_token 作为查询参数传递。
-  // 这可能会在服务器日志、浏览器历史和引用头中暴露令牌。
-  // 确保任何记录此 URL 的日志都隐藏 access_token 参数。
-  const sendUrl = buildWecomApiUrl(account, `/cgi-bin/message/send?access_token=${encodeURIComponent(token)}`);
-  const startedAt = Date.now();
-  let data: SendMessageResult & { errcode?: number };
-  try {
-    const resp = await fetch(sendUrl, {
-      method: "POST",
-      body: JSON.stringify(payload),
-      headers: { "Content-Type": "application/json" },
-    });
-    data = await parseJsonResponseOrThrow<SendMessageResult & { errcode?: number }>(
-      resp,
-      log,
-      "message/send(text)"
-    );
-  } catch (err) {
-    const classified = classifyRequestError(err);
-    logActiveSendFailure({
-      log,
-      stage: "message/send(text)",
-      endpoint: sendUrl,
-      startedAt,
-      category: classified.category,
-      detail: classified.detail,
-      code: classified.code,
-    });
-    throw err;
+  const chunks = splitTextByByteLength(text, WEAPP_TEXT_MAX_BYTES);
+  if (chunks.length > 1) {
+    log.info(`[wecom-app] Text length exceeds ${WEAPP_TEXT_MAX_BYTES} bytes, split into ${chunks.length} chunks`);
   }
 
-  log.info(`[wecom-app] Text message sent, ok: ${data.errcode === 0}, msgid: ${data.msgid}, errcode: ${data.errcode}, errmsg: ${data.errmsg}`);
-  if (data.errcode !== undefined && data.errcode !== 0) {
-    logActiveSendFailure({
-      log,
-      stage: "message/send(text)",
-      endpoint: sendUrl,
-      startedAt,
-      category: "api_rejected",
-      detail: `errcode=${data.errcode}, errmsg=${data.errmsg ?? ""}, invaliduser=${data.invaliduser ?? ""}`,
-    });
+  const sendTextOnce = async (content: string): Promise<SendMessageResult & { errcode?: number }> => {
+    const payload: Record<string, unknown> = {
+      msgtype: "text",
+      agentid: account.agentId,
+      text: { content },
+      touser: target.userId,
+    };
+
+    // 注意：企业微信 API 要求 access_token 作为查询参数传递。
+    // 这可能会在服务器日志、浏览器历史和引用头中暴露令牌。
+    // 确保任何记录此 URL 的日志都隐藏 access_token 参数。
+    const sendUrl = buildWecomApiUrl(account, `/cgi-bin/message/send?access_token=${encodeURIComponent(token)}`);
+    const startedAt = Date.now();
+    try {
+      const resp = await fetch(sendUrl, {
+        method: "POST",
+        body: JSON.stringify(payload),
+        headers: { "Content-Type": "application/json" },
+      });
+      const data = await parseJsonResponseOrThrow<SendMessageResult & { errcode?: number }>(
+        resp,
+        log,
+        "message/send(text)"
+      );
+
+      log.info(`[wecom-app] Text message sent, ok: ${data.errcode === 0}, msgid: ${data.msgid}, errcode: ${data.errcode}, errmsg: ${data.errmsg}`);
+      if (data.errcode !== undefined && data.errcode !== 0) {
+        logActiveSendFailure({
+          log,
+          stage: "message/send(text)",
+          endpoint: sendUrl,
+          startedAt,
+          category: "api_rejected",
+          detail: `errcode=${data.errcode}, errmsg=${data.errmsg ?? ""}, invaliduser=${data.invaliduser ?? ""}`,
+        });
+      }
+      return data;
+    } catch (err) {
+      const classified = classifyRequestError(err);
+      logActiveSendFailure({
+        log,
+        stage: "message/send(text)",
+        endpoint: sendUrl,
+        startedAt,
+        category: classified.category,
+        detail: classified.detail,
+        code: classified.code,
+      });
+      throw err;
+    }
+  };
+
+  let last: SendMessageResult & { errcode?: number } | undefined;
+  for (let i = 0; i < chunks.length; i += 1) {
+    const chunk = chunks[i]!;
+    last = await sendTextOnce(chunk);
+    if (last.errcode !== undefined && last.errcode !== 0) {
+      return {
+        ok: false,
+        errcode: last.errcode,
+        errmsg: last.errmsg,
+        invaliduser: last.invaliduser,
+        invalidparty: last.invalidparty,
+        invalidtag: last.invalidtag,
+        msgid: last.msgid,
+      };
+    }
+    if (i < chunks.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, WEAPP_TEXT_CHUNK_DELAY_MS));
+    }
   }
+
   return {
-    ok: data.errcode === 0,
-    errcode: data.errcode,
-    errmsg: data.errmsg,
-    invaliduser: data.invaliduser,
-    invalidparty: data.invalidparty,
-    invalidtag: data.invalidtag,
-    msgid: data.msgid,
+    ok: last?.errcode === 0,
+    errcode: last?.errcode,
+    errmsg: last?.errmsg,
+    invaliduser: last?.invaliduser,
+    invalidparty: last?.invalidparty,
+    invalidtag: last?.invalidtag,
+    msgid: last?.msgid,
   };
 }
 

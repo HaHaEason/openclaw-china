@@ -171,7 +171,7 @@ ffmpeg -i in.wav -ar 8000 -ac 1 -c:a amr_nb out.amr
 
 - wecom-app webhook 会先返回 stream 占位，再在后台推送最终内容。
 - 推送前会做 Markdown 降级（`stripMarkdown`）。
-- 企业微信单条文本限制 2048 bytes，超出会自动分段发送。
+- 企业微信单条文本限制 2000 bytes，超出会自动分段发送。
 
 ---
 
